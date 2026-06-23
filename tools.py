@@ -3,11 +3,21 @@ import requests
 from google.genai import types
 
 # ─────────────────────────────────────────────
-# Load credentials from api.json
+# Load credentials from env vars or api.json fallback
 # ─────────────────────────────────────────────
-with open("api.json", "r") as f:
-    _config = json.load(f)
+import os
 
+def _load_config():
+    if os.environ.get("SHOPIFY_STORE"):
+        return {
+            "shopify_store":         os.environ["SHOPIFY_STORE"],
+            "shopify_client_id":     os.environ["SHOPIFY_CLIENT_ID"],
+            "shopify_client_secret": os.environ["SHOPIFY_CLIENT_SECRET"],
+        }
+    with open("api.json", "r") as f:
+        return json.load(f)
+
+_config       = _load_config()
 SHOP          = _config["shopify_store"]
 CLIENT_ID     = _config["shopify_client_id"]
 CLIENT_SECRET = _config["shopify_client_secret"]

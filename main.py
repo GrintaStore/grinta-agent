@@ -12,10 +12,15 @@ from tools import TOOLS, dispatch_tool
 # ─────────────────────────────────────────────
 # Load config
 # ─────────────────────────────────────────────
-with open("api.json", "r") as f:
-    _config = json.load(f)
+import os
 
-client = genai.Client(api_key=_config["gemini_api_key"])
+def _get_gemini_key():
+    if os.environ.get("GEMINI_API_KEY"):
+        return os.environ["GEMINI_API_KEY"]
+    with open("api.json", "r") as f:
+        return json.load(f)["gemini_api_key"]
+
+client = genai.Client(api_key=_get_gemini_key())
 MODEL  = "gemini-2.5-flash-lite"
 
 # ─────────────────────────────────────────────
