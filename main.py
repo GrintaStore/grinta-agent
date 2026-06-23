@@ -52,7 +52,8 @@ def _send_email(subject: str, body: str) -> None:
         msg["Subject"] = subject
         msg["From"]    = formataddr(("Grinta Agent", ZOHO_USER))
         msg["To"]      = NOTIFY_EMAIL
-        with smtplib.SMTP_SSL("smtppro.zoho.com", 465, timeout=20) as server:
+        with smtplib.SMTP("smtppro.zoho.com", 587, timeout=20) as server:
+            server.starttls()
             server.login(ZOHO_USER, ZOHO_APP_PASSWORD)
             server.sendmail(ZOHO_USER, [NOTIFY_EMAIL], msg.as_string())
         print("[email] escalation notification sent")
@@ -156,12 +157,6 @@ class ChatResponse(BaseModel):
 def root():
     return {"status": "Grinta CS Agent is running"}
 
-@app.get("/debug-db")
-def debug_db():
-    import requests as req
-    url = f"{db.SUPABASE_URL}/rest/v1/sessions?limit=1"
-    res = req.get(url, headers=db._headers())
-    return {"status": res.status_code, "body": res.text[:500], "url": db.SUPABASE_URL}
 
 # ─────────────────────────────────────────────
 # Build Gemini history from stored messages
@@ -213,7 +208,6 @@ def chat(req: ChatRequest):
     escalated = False
 
     # Tool-use loop
-    print(f"[chat] session={req.session_id} msg='{req.message}'")
     for _ in range(5):
         response = client.models.generate_content(
             model=MODEL,
@@ -230,7 +224,6 @@ def chat(req: ChatRequest):
 
         if not tool_calls:
             text = "".join(p.text for p in content.parts if p.text).strip()
-            print(f"[reply] '{text}'")
             db.add_message(req.session_id, "assistant", text)
             if escalated:
                 db.set_status(req.session_id, "escalated")
