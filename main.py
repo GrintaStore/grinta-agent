@@ -156,6 +156,12 @@ class ChatResponse(BaseModel):
 def root():
     return {"status": "Grinta CS Agent is running"}
 
+@app.get("/debug-db")
+def debug_db():
+    import requests as req
+    url = f"{db.SUPABASE_URL}/rest/v1/sessions?limit=1"
+    res = req.get(url, headers=db._headers())
+    return {"status": res.status_code, "body": res.text[:500], "url": db.SUPABASE_URL}
 
 # ─────────────────────────────────────────────
 # Build Gemini history from stored messages
