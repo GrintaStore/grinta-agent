@@ -52,7 +52,7 @@ def _send_email(subject: str, body: str) -> None:
         msg["Subject"] = subject
         msg["From"]    = formataddr(("Grinta Agent", ZOHO_USER))
         msg["To"]      = NOTIFY_EMAIL
-        with smtplib.SMTP("smtppro.zoho.com", 587, timeout=20) as server:
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as server:
             server.starttls()
             server.login(ZOHO_USER, ZOHO_APP_PASSWORD)
             server.sendmail(ZOHO_USER, [NOTIFY_EMAIL], msg.as_string())
