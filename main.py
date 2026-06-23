@@ -30,7 +30,7 @@ def _get_gemini_key():
         return json.load(f)["gemini_api_key"]
 
 client = genai.Client(api_key=_get_gemini_key())
-MODEL  = "gemini-2.5-flash-lite"
+MODEL  = "gemini-3.1-flash-lite"
 
 # ─────────────────────────────────────────────
 # Config
