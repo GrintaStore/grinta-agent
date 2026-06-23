@@ -2,7 +2,12 @@ import os
 import json
 import base64
 import secrets
+import smtplib
+import threading
+import time
 from pathlib import Path
+from email.mime.text import MIMEText
+from email.utils import formataddr
 
 from google import genai
 from google.genai import types
@@ -16,7 +21,7 @@ from tools import TOOLS, dispatch_tool
 import db
 
 # ─────────────────────────────────────────────
-# Gemini key (env first, api.json fallback)
+# Gemini
 # ─────────────────────────────────────────────
 def _get_gemini_key():
     if os.environ.get("GEMINI_API_KEY"):
@@ -27,25 +32,21 @@ def _get_gemini_key():
 client = genai.Client(api_key=_get_gemini_key())
 MODEL  = "gemini-2.5-flash-lite"
 
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "grinta123")
-
 # ─────────────────────────────────────────────
-# Email notification (Zoho SMTP) on escalation
+# Config
 # ─────────────────────────────────────────────
-import smtplib
-import threading
-from email.mime.text import MIMEText
-from email.utils import formataddr
-
+ADMIN_PASSWORD    = os.environ.get("ADMIN_PASSWORD", "grinta123")
 ZOHO_USER         = os.environ.get("ZOHO_USER", "")
 ZOHO_APP_PASSWORD = os.environ.get("ZOHO_APP_PASSWORD", "")
 NOTIFY_EMAIL      = os.environ.get("NOTIFY_EMAIL", "")
 ADMIN_URL         = os.environ.get("ADMIN_URL", "https://grinta-agent.onrender.com/admin")
 
-
+# ─────────────────────────────────────────────
+# Email notification
+# ─────────────────────────────────────────────
 def _send_email(subject: str, body: str) -> None:
     if not (ZOHO_USER and ZOHO_APP_PASSWORD and NOTIFY_EMAIL):
-        print("[email] SMTP not configured — skipping notification")
+        print("[email] SMTP not configured — skipping")
         return
     try:
         msg = MIMEText(body, "plain", "utf-8")
@@ -56,13 +57,12 @@ def _send_email(subject: str, body: str) -> None:
             server.starttls()
             server.login(ZOHO_USER, ZOHO_APP_PASSWORD)
             server.sendmail(ZOHO_USER, [NOTIFY_EMAIL], msg.as_string())
-        print("[email] escalation notification sent")
+        print("[email] sent")
     except Exception as e:
-        print(f"[email] failed to send: {e}")
+        print(f"[email] failed: {e}")
 
 
 def notify_escalation(session_id: str, reason: str, summary: str) -> None:
-    """Send the escalation email in a background thread (non-blocking)."""
     subject = "🔴 פנייה חדשה דורשת טיפול — Grinta"
     body = (
         "התקבלה פנייה חדשה שהבוט העביר לטיפול אנושי.\n\n"
@@ -127,7 +127,7 @@ Escalate when:
 """
 
 # ─────────────────────────────────────────────
-# FastAPI app
+# FastAPI
 # ─────────────────────────────────────────────
 app = FastAPI(title="Grinta CS Agent")
 
@@ -158,9 +158,6 @@ def root():
     return {"status": "Grinta CS Agent is running"}
 
 
-# ─────────────────────────────────────────────
-# Build Gemini history from stored messages
-# ─────────────────────────────────────────────
 def build_history(session_id: str, skip_last_user: bool):
     msgs = db.get_messages(session_id)
     if skip_last_user and msgs and msgs[-1]["role"] == "user":
@@ -172,24 +169,36 @@ def build_history(session_id: str, skip_last_user: bool):
     return history
 
 
-# ─────────────────────────────────────────────
-# Customer chat endpoint
-# ─────────────────────────────────────────────
+def gemini_generate(history):
+    """Call Gemini with up to 3 retries on 503."""
+    for attempt in range(3):
+        try:
+            return client.models.generate_content(
+                model=MODEL,
+                contents=history,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    tools=TOOLS,
+                )
+            )
+        except Exception as e:
+            if "503" in str(e) and attempt < 2:
+                time.sleep(3)
+                continue
+            raise
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
     db.ensure_session(req.session_id)
 
-    # Persist the incoming user message (text only; image noted)
     stored_text = req.message or ("[התקבלה תמונה]" if req.image_base64 else "")
     db.add_message(req.session_id, "user", stored_text)
 
-    # If a human has taken over, the bot stays silent
     session = db.get_session(req.session_id)
     if session and session.get("status") == "escalated":
         return ChatResponse(reply="", session_id=req.session_id, escalated=True)
 
-    # Build history from DB (excluding the user message we just stored),
-    # then append the current turn with optional image
     history = build_history(req.session_id, skip_last_user=True)
 
     user_parts = []
@@ -207,16 +216,8 @@ def chat(req: ChatRequest):
 
     escalated = False
 
-    # Tool-use loop
     for _ in range(5):
-        response = client.models.generate_content(
-            model=MODEL,
-            contents=history,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                tools=TOOLS,
-            )
-        )
+        response = gemini_generate(history)
         content = response.candidates[0].content
         history.append(content)
 
@@ -231,17 +232,13 @@ def chat(req: ChatRequest):
 
         tool_response_parts = []
         for part in tool_calls:
-            fc = part.function_call
+            fc   = part.function_call
             name = fc.name
             args = dict(fc.args)
             if name == "escalate_to_human":
                 escalated = True
                 db.set_status(req.session_id, "escalated", args.get("reason", ""))
-                notify_escalation(
-                    req.session_id,
-                    args.get("reason", ""),
-                    args.get("summary", ""),
-                )
+                notify_escalation(req.session_id, args.get("reason", ""), args.get("summary", ""))
             print(f"[Tool call] {name}({args})")
             result = dispatch_tool(name, args)
             tool_response_parts.append(types.Part(
@@ -256,9 +253,6 @@ def chat(req: ChatRequest):
     return ChatResponse(reply=fallback, session_id=req.session_id, escalated=escalated)
 
 
-# ─────────────────────────────────────────────
-# Poll for human replies (widget calls this)
-# ─────────────────────────────────────────────
 @app.get("/poll")
 def poll(session_id: str, after_id: int = 0):
     msgs = db.get_human_messages_after(session_id, after_id)
@@ -266,7 +260,7 @@ def poll(session_id: str, after_id: int = 0):
 
 
 # ─────────────────────────────────────────────
-# Admin inbox (password protected)
+# Admin inbox
 # ─────────────────────────────────────────────
 security = HTTPBasic()
 
@@ -306,7 +300,6 @@ def admin_reply(req: ReplyRequest, _: bool = Depends(check_admin)):
 
 @app.post("/admin/api/handback")
 def admin_handback(req: ReplyRequest, _: bool = Depends(check_admin)):
-    # content unused; returns the conversation to the bot
     db.set_status(req.session_id, "bot")
     return {"ok": True}
 
