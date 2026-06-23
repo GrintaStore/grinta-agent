@@ -213,6 +213,7 @@ def chat(req: ChatRequest):
     escalated = False
 
     # Tool-use loop
+    print(f"[chat] session={req.session_id} msg='{req.message}'")
     for _ in range(5):
         response = client.models.generate_content(
             model=MODEL,
@@ -229,6 +230,7 @@ def chat(req: ChatRequest):
 
         if not tool_calls:
             text = "".join(p.text for p in content.parts if p.text).strip()
+            print(f"[reply] '{text}'")
             db.add_message(req.session_id, "assistant", text)
             if escalated:
                 db.set_status(req.session_id, "escalated")
