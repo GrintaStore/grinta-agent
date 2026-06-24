@@ -9,6 +9,7 @@ Requires two env vars (set on Render):
 """
 import os
 import json
+import time
 import requests
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
@@ -101,10 +102,12 @@ def list_sessions(only_escalated: bool = False) -> list:
 # Messages
 # ─────────────────────────────────────────────
 
-def add_message(session_id: str, role: str, content: str) -> dict | None:
-    """role is one of: user, assistant, human"""
+def add_message(session_id: str, role: str, content: str, image_data: str = None) -> dict | None:
+    """role is one of: user, assistant, human. image_data is an optional image URL."""
     url = f"{_REST}/messages"
     payload = {"session_id": session_id, "role": role, "content": content}
+    if image_data:
+        payload["image_data"] = image_data
     res = requests.post(
         url,
         headers=_headers({"Prefer": "return=representation"}),
@@ -114,6 +117,23 @@ def add_message(session_id: str, role: str, content: str) -> dict | None:
     touch_session(session_id)
     rows = res.json() if res.status_code in (200, 201) else []
     return rows[0] if rows else None
+
+
+def upload_image(session_id: str, data_bytes: bytes, content_type: str) -> str | None:
+    """Upload an image to Supabase Storage, return its public URL."""
+    ext = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"}.get(content_type, "img")
+    fname = f"{session_id}/{int(time.time() * 1000)}.{ext}"
+    url = f"{SUPABASE_URL}/storage/v1/object/chat-images/{fname}"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": content_type,
+    }
+    res = requests.post(url, headers=headers, data=data_bytes, timeout=30)
+    if res.status_code in (200, 201):
+        return f"{SUPABASE_URL}/storage/v1/object/public/chat-images/{fname}"
+    print(f"[storage] upload failed {res.status_code}: {res.text[:200]}")
+    return None
 
 
 def get_messages(session_id: str) -> list:
@@ -126,6 +146,16 @@ def get_human_messages_after(session_id: str, after_id: int) -> list:
     url = (
         f"{_REST}/messages?session_id=eq.{session_id}"
         f"&role=eq.human&id=gt.{after_id}&order=id.asc&select=id,content,created_at"
+    )
+    res = requests.get(url, headers=_headers(), timeout=20)
+    return res.json() if res.status_code == 200 else []
+
+
+def get_new_messages_after(session_id: str, after_id: int) -> list:
+    """Return assistant + human messages newer than after_id (for widget polling)."""
+    url = (
+        f"{_REST}/messages?session_id=eq.{session_id}"
+        f"&role=in.(human,assistant)&id=gt.{after_id}&order=id.asc&select=id,role,content,image_data"
     )
     res = requests.get(url, headers=_headers(), timeout=20)
     return res.json() if res.status_code == 200 else []

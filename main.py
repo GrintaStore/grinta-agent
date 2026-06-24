@@ -6,6 +6,7 @@ import smtplib
 import threading
 import time
 from pathlib import Path
+from datetime import datetime, timezone, timedelta
 from email.mime.text import MIMEText
 from email.utils import formataddr
 
@@ -30,7 +31,7 @@ def _get_gemini_key():
         return json.load(f)["gemini_api_key"]
 
 client = genai.Client(api_key=_get_gemini_key())
-MODEL  = "gemini-2.5-flash-lite"
+MODEL  = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
 # ─────────────────────────────────────────────
 # Config
@@ -151,6 +152,7 @@ class ChatResponse(BaseModel):
     reply: str
     session_id: str
     escalated: bool = False
+    reply_id: int = 0
 
 
 @app.get("/")
@@ -188,34 +190,9 @@ def gemini_generate(history):
             raise
 
 
-@app.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest):
-    db.ensure_session(req.session_id)
-
-    stored_text = req.message or ("[התקבלה תמונה]" if req.image_base64 else "")
-    db.add_message(req.session_id, "user", stored_text)
-
-    session = db.get_session(req.session_id)
-    if session and session.get("status") == "escalated":
-        return ChatResponse(reply="", session_id=req.session_id, escalated=True)
-
-    history = build_history(req.session_id, skip_last_user=True)
-
-    user_parts = []
-    if req.image_base64:
-        try:
-            img_bytes = base64.b64decode(req.image_base64)
-            user_parts.append(types.Part.from_bytes(
-                data=img_bytes,
-                mime_type=req.image_mime or "image/jpeg",
-            ))
-        except Exception as e:
-            print(f"[Image decode error] {e}")
-    user_parts.append(types.Part(text=req.message or "הלקוח שלח תמונה. בדוק אותה ועזור בהתאם."))
-    history.append(types.Content(role="user", parts=user_parts))
-
+def run_loop(session_id: str, history):
+    """Run the tool-use loop over a prepared history. Returns (text, escalated)."""
     escalated = False
-
     for _ in range(5):
         response = gemini_generate(history)
         content = response.candidates[0].content
@@ -225,10 +202,7 @@ def chat(req: ChatRequest):
 
         if not tool_calls:
             text = "".join(p.text for p in content.parts if p.text).strip()
-            db.add_message(req.session_id, "assistant", text)
-            if escalated:
-                db.set_status(req.session_id, "escalated")
-            return ChatResponse(reply=text, session_id=req.session_id, escalated=escalated)
+            return text, escalated
 
         tool_response_parts = []
         for part in tool_calls:
@@ -237,8 +211,8 @@ def chat(req: ChatRequest):
             args = dict(fc.args)
             if name == "escalate_to_human":
                 escalated = True
-                db.set_status(req.session_id, "escalated", args.get("reason", ""))
-                notify_escalation(req.session_id, args.get("reason", ""), args.get("summary", ""))
+                db.set_status(session_id, "escalated", args.get("reason", ""))
+                notify_escalation(session_id, args.get("reason", ""), args.get("summary", ""))
             print(f"[Tool call] {name}({args})")
             result = dispatch_tool(name, args)
             tool_response_parts.append(types.Part(
@@ -248,25 +222,114 @@ def chat(req: ChatRequest):
             ))
         history.append(types.Content(role="user", parts=tool_response_parts))
 
-    fallback = "מצטערים, נתקלנו בבעיה טכנית. נשמח לעזור לך בדרך אחרת."
-    db.add_message(req.session_id, "assistant", fallback)
-    return ChatResponse(reply=fallback, session_id=req.session_id, escalated=escalated)
+    return "מצטערים, נתקלנו בבעיה טכנית. נשמח לעזור לך בדרך אחרת.", escalated
+
+
+def run_bot_turn(session_id: str):
+    """Generate a bot answer for the current conversation state (used after handback).
+    Runs in a background thread. Saves the assistant reply so the widget can poll it."""
+    try:
+        history = build_history(session_id, skip_last_user=False)
+        text, escalated = run_loop(session_id, history)
+        # If a human took over again while we were generating, discard
+        fresh = db.get_session(session_id)
+        if fresh and fresh.get("status") == "escalated" and not escalated:
+            return
+        db.add_message(session_id, "assistant", text)
+    except Exception as e:
+        print(f"[run_bot_turn] error: {e}")
+
+
+def _is_stale(updated_at_str: str, hours: int = 1) -> bool:
+    """True if the given timestamp is older than `hours` hours."""
+    if not updated_at_str:
+        return False
+    try:
+        ts = datetime.fromisoformat(updated_at_str.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - ts) > timedelta(hours=hours)
+    except Exception as e:
+        print(f"[stale check] {e}")
+        return False
+
+
+@app.post("/chat", response_model=ChatResponse)
+def chat(req: ChatRequest):
+    db.ensure_session(req.session_id)
+
+    # Read status + last activity BEFORE the new message resets the timer
+    session_before = db.get_session(req.session_id)
+    was_escalated = bool(session_before and session_before.get("status") == "escalated")
+
+    # Auto-handback: escalated but quiet for over 1 hour -> return to bot
+    auto_handback = False
+    if was_escalated and _is_stale(session_before.get("updated_at"), 1):
+        db.set_status(req.session_id, "bot")
+        auto_handback = True
+
+    # Decode + upload image (if any) so it can be shown later in the inbox
+    img_bytes = None
+    image_url = None
+    if req.image_base64:
+        try:
+            img_bytes = base64.b64decode(req.image_base64)
+            image_url = db.upload_image(req.session_id, img_bytes, req.image_mime or "image/jpeg")
+        except Exception as e:
+            print(f"[Image error] {e}")
+
+    stored_text = req.message or ("[התקבלה תמונה]" if req.image_base64 else "")
+    db.add_message(req.session_id, "user", stored_text, image_url)
+
+    # If a human is handling it (and it wasn't just auto-handed-back), bot stays silent
+    if was_escalated and not auto_handback:
+        return ChatResponse(reply="", session_id=req.session_id, escalated=True)
+
+    history = build_history(req.session_id, skip_last_user=True)
+
+    user_parts = []
+    if img_bytes:
+        user_parts.append(types.Part.from_bytes(
+            data=img_bytes,
+            mime_type=req.image_mime or "image/jpeg",
+        ))
+    user_parts.append(types.Part(text=req.message or "הלקוח שלח תמונה. בדוק אותה ועזור בהתאם."))
+    history.append(types.Content(role="user", parts=user_parts))
+
+    text, escalated = run_loop(req.session_id, history)
+
+    # Re-check: if a human took over DURING generation, discard the bot's answer
+    fresh = db.get_session(req.session_id)
+    if fresh and fresh.get("status") == "escalated" and not escalated:
+        return ChatResponse(reply="", session_id=req.session_id, escalated=True)
+
+    row = db.add_message(req.session_id, "assistant", text)
+    if escalated:
+        db.set_status(req.session_id, "escalated")
+    reply_id = (row or {}).get("id") or 0
+    return ChatResponse(reply=text, session_id=req.session_id, escalated=escalated, reply_id=reply_id)
 
 
 @app.get("/poll")
 def poll(session_id: str, after_id: int = 0):
-    msgs = db.get_human_messages_after(session_id, after_id)
+    """Return new assistant + human messages after a cursor (for the widget)."""
+    msgs = db.get_new_messages_after(session_id, after_id)
     return {"messages": msgs}
 
 
 @app.get("/history")
 def history(session_id: str):
-    """Return the full visible conversation for a session (for the widget on load)."""
+    """Return the full visible conversation for a session (widget on load)."""
     msgs = db.get_messages(session_id)
     out = []
     for m in msgs:
         if m["role"] in ("user", "assistant", "human"):
-            out.append({"id": m["id"], "role": m["role"], "content": m["content"]})
+            out.append({
+                "id": m["id"],
+                "role": m["role"],
+                "content": m["content"],
+                "image_data": m.get("image_data"),
+            })
     return {"messages": out}
 
 
@@ -312,6 +375,10 @@ def admin_reply(req: ReplyRequest, _: bool = Depends(check_admin)):
 @app.post("/admin/api/handback")
 def admin_handback(req: ReplyRequest, _: bool = Depends(check_admin)):
     db.set_status(req.session_id, "bot")
+    # If the customer's last message is unanswered, let the bot answer it now
+    msgs = db.get_messages(req.session_id)
+    if msgs and msgs[-1]["role"] == "user":
+        threading.Thread(target=run_bot_turn, args=(req.session_id,), daemon=True).start()
     return {"ok": True}
 
 
@@ -450,7 +517,10 @@ ADMIN_HTML = """
           const who = m.role==='user'?'לקוח':(m.role==='human'?'אתה':'בוט');
           const div = document.createElement('div');
           div.className = 'm ' + m.role;
-          div.innerHTML = '<div class="who">'+who+'</div>'+ escapeHtml(m.content||'');
+          let html = '<div class="who">'+who+'</div>';
+          if (m.content) html += escapeHtml(m.content);
+          if (m.image_data) html += '<br><img src="'+m.image_data+'" style="max-width:200px;border-radius:8px;margin-top:6px">';
+          div.innerHTML = html;
           box.appendChild(div);
         });
         box.scrollTop = box.scrollHeight;
