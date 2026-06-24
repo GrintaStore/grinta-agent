@@ -160,6 +160,22 @@ class ChatResponse(BaseModel):
 def root():
     return {"status": "Grinta CS Agent is running"}
 
+@app.get("/debug-product")
+def debug_product(q: str):
+    import tools
+    result = tools.get_product(q)
+    # also show how many products total we can see
+    import requests as rq
+    url = f"{tools.BASE}/products.json?limit=250&status=active"
+    res = rq.get(url, headers=tools._headers())
+    all_p = res.json().get("products", [])
+    return {
+        "query": q,
+        "total_products_visible": len(all_p),
+        "sample_titles": [p.get("title") for p in all_p[:10]],
+        "search_result": result
+    }
+
 
 def build_history(session_id: str, skip_last_user: bool):
     msgs = db.get_messages(session_id)
