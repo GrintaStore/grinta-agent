@@ -169,7 +169,7 @@ def _fetch_all_products() -> list:
     since_id = 0
     for _ in range(20):  # up to 5000 products
         url = (f"{BASE}/products.json?limit=250&status=active"
-               f"&since_id={since_id}&fields=id,title,tags")
+               f"&since_id={since_id}&fields=id,title,tags,handle")
         res = requests.get(url, headers=_headers(), timeout=30)
         batch = res.json().get("products", [])
         if not batch:
@@ -193,7 +193,12 @@ def get_catalog_text(max_age: int = 600) -> str:
             title = (p.get("title") or "").strip()
             if not title:
                 continue
-            lines.append(f"- {title} | {_describe_product(title, _tags_list(p))}")
+            handle = (p.get("handle") or "").strip()
+            link = f"https://grinta.co.il/products/{handle}" if handle else ""
+            line = f"- {title} | {_describe_product(title, _tags_list(p))}"
+            if link:
+                line += f" | קישור: {link}"
+            lines.append(line)
         text = "\n".join(lines)
         _catalog_cache["text"] = text
         _catalog_cache["ts"] = now
