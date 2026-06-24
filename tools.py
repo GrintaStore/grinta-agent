@@ -95,17 +95,22 @@ def get_order_by_number(order_number: str) -> dict:
 
 
 def get_product(query: str) -> dict:
-    """Search for a product whose title or tags contain the query (substring match)."""
+    """Search for a product whose title or tags contain the query words."""
     url = f"{BASE}/products.json?limit=250&status=active"
     res = requests.get(url, headers=_headers())
     all_products = res.json().get("products", [])
 
-    query_lower = query.lower().strip()
-    products = [
-        p for p in all_products
-        if query_lower in p.get("title", "").lower()
-        or any(query_lower in t.lower() for t in p.get("tags", []))
-    ]
+    # Match on each meaningful word (ignore generic words like 'jersey'/'חולצה')
+    stop = {"jersey", "kit", "shirt", "חולצה", "חולצת", "אימונית", "מכנס", "מכנסיים", "ג'קט", "מעיל"}
+    words = [w for w in query.lower().strip().split() if w not in stop]
+    if not words:
+        words = query.lower().strip().split()
+
+    def matches(p):
+        haystack = p.get("title", "").lower() + " " + " ".join(p.get("tags", [])).lower()
+        return all(w in haystack for w in words)
+
+    products = [p for p in all_products if matches(p)]
 
     if not products:
         return {"found": False, "message": f"No products found for '{query}'."}
