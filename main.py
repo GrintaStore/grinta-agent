@@ -31,7 +31,14 @@ def _get_gemini_key():
         return json.load(f)["gemini_api_key"]
 
 client = genai.Client(api_key=_get_gemini_key())
-MODEL  = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+
+# Models are tried in order: if one fails (e.g. 503 overloaded), fall to the next
+MODELS = [
+    "gemini-2.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-3-flash-preview",
+]
 
 # ─────────────────────────────────────────────
 # Config
@@ -187,12 +194,13 @@ def build_system_instruction() -> str:
 
 
 def gemini_generate(history):
-    """Call Gemini with up to 3 retries on 503."""
+    """Try each model in order; fall to the next if one fails (e.g. 503 overloaded)."""
     system_instruction = build_system_instruction()
-    for attempt in range(3):
+    last_error = None
+    for model_name in MODELS:
         try:
             return client.models.generate_content(
-                model=MODEL,
+                model=model_name,
                 contents=history,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
@@ -200,10 +208,11 @@ def gemini_generate(history):
                 )
             )
         except Exception as e:
-            if "503" in str(e) and attempt < 2:
-                time.sleep(3)
-                continue
-            raise
+            last_error = e
+            print(f"[model] {model_name} failed: {str(e)[:120]} — trying next")
+            continue
+    # All models failed
+    raise last_error
 
 
 def run_loop(session_id: str, history):
