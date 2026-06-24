@@ -1,4 +1,5 @@
 import json
+import time
 import requests
 from google.genai import types
 
@@ -94,38 +95,112 @@ def get_order_by_number(order_number: str) -> dict:
     }
 
 
-def get_product(query: str) -> dict:
-    """Search for a product whose title or tags contain the query words."""
-    url = f"{BASE}/products.json?limit=250&status=active"
-    res = requests.get(url, headers=_headers())
-    all_products = res.json().get("products", [])
+# ─────────────────────────────────────────────
+# Product catalog (injected into the prompt, no tool)
+# ─────────────────────────────────────────────
 
-    # Match on each meaningful word (ignore generic words like 'jersey'/'חולצה')
-    stop = {"jersey", "kit", "shirt", "חולצה", "חולצת", "אימונית", "מכנס", "מכנסיים", "ג'קט", "מעיל"}
-    words = [w for w in query.lower().strip().split() if w not in stop]
-    if not words:
-        words = query.lower().strip().split()
+_catalog_cache = {"text": None, "ts": 0}
 
-    def matches(p):
-        haystack = p.get("title", "").lower() + " " + " ".join(p.get("tags", [])).lower()
-        return all(w in haystack for w in words)
 
-    products = [p for p in all_products if matches(p)]
+def _tags_list(p) -> list:
+    """Shopify REST returns tags as a comma-separated string; normalize to a list."""
+    t = p.get("tags", "")
+    if isinstance(t, list):
+        return [x.strip() for x in t]
+    return [x.strip() for x in t.split(",") if x.strip()]
 
-    if not products:
-        return {"found": False, "message": f"No products found for '{query}'."}
 
-    result = []
-    for p in products:
-        variants = []
-        for v in p["variants"]:
-            variants.append({
-                "size": v.get("option1", "N/A"),
-                "available": (v.get("inventory_quantity") or 0) > 0,
-                "price": v["price"]
-            })
-        result.append({"title": p["title"], "variants": variants})
-    return {"found": True, "products": result}
+def _describe_product(title: str, tags: list) -> str:
+    """Compute sizes + add-on options from the title and tags (Easify variants are not visible)."""
+    tagset = set(tags)
+    t = title
+
+    is_tracksuit = "אימונית" in t
+    is_jacket    = ("ג'קט" in t) or ("ג׳קט" in t) or ("מעיל" in t)
+    is_kids      = "ילדים" in t
+    is_kids_suit = ("חליפת ילדים" in t) or ("חליפה" in t and is_kids)
+    is_pants     = (("מכנס" in t) or ("מכנסיים" in t)) and not is_tracksuit and not is_jacket and ("חולצה" not in t and "חולצת" not in t)
+    is_shirt     = ("חולצה" in t) or ("חולצת" in t)
+    is_long      = "ארוכה" in t or "ארוכות" in t
+    is_women     = "נשים" in t
+
+    # --- sizes ---
+    if is_tracksuit:
+        sizes = "S עד 2XL"
+        if "טווח מידות ילדים ומבוגרים" in tagset:
+            sizes = "S עד 2XL וגם 16-28 (ילדים)"
+    elif is_jacket:
+        sizes = "16-28 (ילדים)" if is_kids else "S עד 2XL"
+    elif is_kids_suit:
+        sizes = "16-28"
+    elif is_pants:
+        sizes = "S עד 2XL"
+    elif is_shirt:
+        if is_long or is_women:
+            sizes = "S עד 2XL"
+        else:  # men's shirt — may be extended
+            sizes = "S עד 4XL" if "טווח מידות מורחב" in tagset else "S עד 2XL"
+    else:
+        sizes = "S עד 2XL"
+
+    # --- add-on options ---
+    opts = []
+    if is_shirt and not is_kids_suit:
+        if "אופציות מכנס וגרביים קיימות" in tagset:
+            opts.append("ניתן להוסיף מכנס וגרביים")
+        elif "אופציית מכנסיים קיימת" in tagset:
+            opts.append("ניתן להוסיף מכנס")
+    elif is_kids_suit or is_pants:
+        if "אופציית גרביים קיימת" in tagset:
+            opts.append("ניתן להוסיף גרביים")
+    elif is_jacket and not is_kids:
+        if "אופציית מכנסיים קיימת" in tagset:
+            opts.append("ניתן להוסיף מכנס")
+
+    desc = f"מידות: {sizes}"
+    if opts:
+        desc += " — " + ", ".join(opts)
+    return desc
+
+
+def _fetch_all_products() -> list:
+    """Fetch all active products with pagination (Shopify caps at 250 per page)."""
+    products = []
+    since_id = 0
+    for _ in range(20):  # up to 5000 products
+        url = (f"{BASE}/products.json?limit=250&status=active"
+               f"&since_id={since_id}&fields=id,title,tags")
+        res = requests.get(url, headers=_headers(), timeout=30)
+        batch = res.json().get("products", [])
+        if not batch:
+            break
+        products.extend(batch)
+        if len(batch) < 250:
+            break
+        since_id = batch[-1]["id"]
+    return products
+
+
+def get_catalog_text(max_age: int = 600) -> str:
+    """Return a cached Hebrew catalog string (title + sizes + options per product)."""
+    now = time.time()
+    if _catalog_cache["text"] and (now - _catalog_cache["ts"] < max_age):
+        return _catalog_cache["text"]
+    try:
+        products = _fetch_all_products()
+        lines = []
+        for p in products:
+            title = (p.get("title") or "").strip()
+            if not title:
+                continue
+            lines.append(f"- {title} | {_describe_product(title, _tags_list(p))}")
+        text = "\n".join(lines)
+        _catalog_cache["text"] = text
+        _catalog_cache["ts"] = now
+        return text
+    except Exception as e:
+        print(f"[catalog] error: {e}")
+        return _catalog_cache["text"] or ""
 
 
 def add_order_note(order_id: str, note: str) -> dict:
@@ -179,17 +254,6 @@ TOOLS = [
             )
         ),
         types.FunctionDeclaration(
-            name="get_product",
-            description="Search for a product by name or team. Use when a customer asks about availability, sizes, or price of a jersey.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "query": types.Schema(type=types.Type.STRING, description="Product name or team name e.g. 'Barcelona' or 'Real Madrid'"),
-                },
-                required=["query"]
-            )
-        ),
-        types.FunctionDeclaration(
             name="add_order_note",
             description="Add a note to an existing order. Use when a customer requests cancellation or has a special instruction. You must already know the order_id from a previous tool call.",
             parameters=types.Schema(
@@ -226,8 +290,6 @@ def dispatch_tool(name: str, args: dict) -> dict:
         return get_order_by_email(**args)
     elif name == "get_order_by_number":
         return get_order_by_number(**args)
-    elif name == "get_product":
-        return get_product(**args)
     elif name == "add_order_note":
         return add_order_note(**args)
     elif name == "escalate_to_human":

@@ -105,8 +105,7 @@ SYSTEM_PROMPT = f"""You are a customer service agent for Grinta (גרינטה), 
 - If a customer provides an order number, use get_order_by_number
 - If a customer provides an email, use get_order_by_email
 - If neither is provided, ask the customer for their email or order number first
-- CRITICAL: Whenever a customer asks about ANY product, team, jersey, kit, or whether something is available or in stock, you MUST call get_product FIRST before answering. NEVER say a product is unavailable or out of stock without calling get_product. NEVER guess or assume availability. If you did not call get_product, you are not allowed to make any claim about whether a product exists or is in stock.
-- CRITICAL: The product catalog is entirely in HEBREW. You MUST always call get_product with a HEBREW query, never English. Translate the team/product name to Hebrew before searching. Examples: Tunisia -> "תוניסיה", Croatia -> "קרואטיה", Jordan -> "ירדן", Barcelona -> "ברצלונה", Real Madrid -> "ריאל מדריד", Argentina -> "ארגנטינה". If the customer wrote the name in Hebrew, use their exact Hebrew word. Searching in English will ALWAYS fail.
+- For product/team/jersey/availability questions: the full product catalog is provided below under "Product catalog". Answer ONLY from that list. If a product appears in the catalog, it exists and is available. If a team/product is NOT in the catalog, we don't currently carry it — offer to check if we can source it (ask for club, season, and kit type). NEVER invent products or claim something is out of stock if it appears in the catalog. For availability of a specific SIZE, refer the customer to the size guide / product page, since the catalog lists the size range we offer, not live per-size stock.
 - For cancellations: check the order, then tell the customer whether cancellation is possible based on the 24-hour policy, but explain that a human representative finalizes it. Add a note with add_order_note saying "CANCELLATION REQUESTED BY CUSTOMER"
 - For returns: tell the customer whether they meet the return conditions, but explain the final approval is done by the team
 
@@ -173,15 +172,30 @@ def build_history(session_id: str, skip_last_user: bool):
     return history
 
 
+def build_system_instruction() -> str:
+    """System prompt + the live product catalog (cached, refreshed periodically)."""
+    catalog = tools.get_catalog_text()
+    if not catalog:
+        return SYSTEM_PROMPT
+    return (
+        SYSTEM_PROMPT
+        + "\n\n## Product catalog (Hebrew — this is the full list of products we offer)\n"
+        + "כל מוצר שמופיע כאן קיים וזמין להזמנה, עם המידות והאופציות שלו. "
+        + "מוצר שלא מופיע ברשימה — איננו מציעים אותו כרגע.\n\n"
+        + catalog
+    )
+
+
 def gemini_generate(history):
     """Call Gemini with up to 3 retries on 503."""
+    system_instruction = build_system_instruction()
     for attempt in range(3):
         try:
             return client.models.generate_content(
                 model=MODEL,
                 contents=history,
                 config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
+                    system_instruction=system_instruction,
                     tools=TOOLS,
                 )
             )
