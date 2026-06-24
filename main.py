@@ -315,6 +315,12 @@ def admin_handback(req: ReplyRequest, _: bool = Depends(check_admin)):
     return {"ok": True}
 
 
+@app.post("/admin/api/takeover")
+def admin_takeover(req: ReplyRequest, _: bool = Depends(check_admin)):
+    db.set_status(req.session_id, "escalated", "נציג השתלט על השיחה")
+    return {"ok": True}
+
+
 @app.get("/admin", response_class=HTMLResponse)
 def admin_page(_: bool = Depends(check_admin)):
     return ADMIN_HTML
@@ -376,13 +382,14 @@ ADMIN_HTML = """
     <div class="composer">
       <input id="reply" placeholder="כתוב תשובה ללקוח..." onkeydown="if(event.key==='Enter')sendReply()">
       <button onclick="sendReply()">שלח</button>
-      <button class="hb" onclick="handback()" title="החזר לטיפול הבוט">↩︎ בוט</button>
+      <button class="hb" id="toggleBtn" style="display:none">✋ קח שליטה</button>
     </div>
   </div>
 </div>
 <script>
   let onlyEsc = true;
   let current = null;
+  let sessionsData = [];
 
   function setFilter(esc){
     onlyEsc = esc;
@@ -394,9 +401,10 @@ ADMIN_HTML = """
   function loadSessions(){
     fetch('/admin/api/sessions?only_escalated=' + onlyEsc)
       .then(r=>r.json()).then(d=>{
+        sessionsData = d.sessions || [];
         const box = document.getElementById('sessions');
         box.innerHTML = '';
-        (d.sessions||[]).forEach(s=>{
+        sessionsData.forEach(s=>{
           const div = document.createElement('div');
           div.className = 'sess' + (s.session_id===current ? ' active':'');
           div.onclick = ()=>openConv(s.session_id);
@@ -406,13 +414,30 @@ ADMIN_HTML = """
             '<div class="preview">'+(s.last_message||'')+'</div>';
           box.appendChild(div);
         });
+        updateToggle();
       });
+  }
+
+  function updateToggle(){
+    const btn = document.getElementById('toggleBtn');
+    if(!btn) return;
+    const s = sessionsData.find(x=>x.session_id===current);
+    if(!s){ btn.style.display='none'; return; }
+    btn.style.display='inline-block';
+    if(s.status==='escalated'){
+      btn.textContent = '↩︎ החזר לבוט';
+      btn.onclick = handback;
+    } else {
+      btn.textContent = '✋ קח שליטה';
+      btn.onclick = takeover;
+    }
   }
 
   function openConv(id){
     current = id;
     loadSessions();
     loadMsgs();
+    updateToggle();
   }
 
   function loadMsgs(){
@@ -445,6 +470,13 @@ ADMIN_HTML = """
   function handback(){
     if(!current) return;
     fetch('/admin/api/handback', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({session_id: current, content: ''})})
+      .then(()=>{ loadSessions(); });
+  }
+
+  function takeover(){
+    if(!current) return;
+    fetch('/admin/api/takeover', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({session_id: current, content: ''})})
       .then(()=>{ loadSessions(); });
   }
