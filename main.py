@@ -30,7 +30,7 @@ def _get_gemini_key():
         return json.load(f)["gemini_api_key"]
 
 client = genai.Client(api_key=_get_gemini_key())
-MODEL  = "gemini-3.1-flash-lite"
+MODEL  = "gemini-2.5-flash-lite"
 
 # ─────────────────────────────────────────────
 # Config
@@ -257,6 +257,17 @@ def chat(req: ChatRequest):
 def poll(session_id: str, after_id: int = 0):
     msgs = db.get_human_messages_after(session_id, after_id)
     return {"messages": msgs}
+
+
+@app.get("/history")
+def history(session_id: str):
+    """Return the full visible conversation for a session (for the widget on load)."""
+    msgs = db.get_messages(session_id)
+    out = []
+    for m in msgs:
+        if m["role"] in ("user", "assistant", "human"):
+            out.append({"id": m["id"], "role": m["role"], "content": m["content"]})
+    return {"messages": out}
 
 
 # ─────────────────────────────────────────────
