@@ -95,11 +95,21 @@ def get_order_by_number(order_number: str) -> dict:
 
 
 def get_product(query: str) -> dict:
-    url = f"{BASE}/products.json?title={query}&limit=5"
+    """Search for a product whose title or tags contain the query (substring match)."""
+    url = f"{BASE}/products.json?limit=250&status=active"
     res = requests.get(url, headers=_headers())
-    products = res.json().get("products", [])
+    all_products = res.json().get("products", [])
+
+    query_lower = query.lower().strip()
+    products = [
+        p for p in all_products
+        if query_lower in p.get("title", "").lower()
+        or any(query_lower in t.lower() for t in p.get("tags", []))
+    ]
+
     if not products:
         return {"found": False, "message": f"No products found for '{query}'."}
+
     result = []
     for p in products:
         variants = []
