@@ -5,7 +5,6 @@ import secrets
 import smtplib
 import threading
 import time
-import tools
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from email.mime.text import MIMEText
@@ -155,6 +154,7 @@ class ChatRequest(BaseModel):
     message: str = ""
     image_base64: str | None = None
     image_mime: str | None = None
+    current_page: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -180,23 +180,32 @@ def build_history(session_id: str, skip_last_user: bool):
     return history
 
 
-def build_system_instruction() -> str:
+def build_system_instruction(current_page: str | None = None) -> str:
     """System prompt + the live product catalog (cached, refreshed periodically)."""
     catalog = tools.get_catalog_text()
-    if not catalog:
-        return SYSTEM_PROMPT
-    return (
-        SYSTEM_PROMPT
-        + "\n\n## Product catalog (Hebrew — this is the full list of products we offer)\n"
-        + "כל מוצר שמופיע כאן קיים וזמין להזמנה, עם המידות והאופציות שלו. "
-        + "מוצר שלא מופיע ברשימה — איננו מציעים אותו כרגע.\n\n"
-        + catalog
-    )
+    instruction = SYSTEM_PROMPT
+    if catalog:
+        instruction += (
+            "\n\n## Product catalog (Hebrew — this is the full list of products we offer)\n"
+            "כל מוצר שמופיע כאן קיים וזמין להזמנה, עם המידות והאופציות שלו. "
+            "מוצר שלא מופיע ברשימה — איננו מציעים אותו כרגע.\n\n"
+            + catalog
+        )
+    if current_page:
+        instruction += (
+            "\n\n## Current page\n"
+            f"The customer is currently viewing this page on the site: {current_page}\n"
+            "Use this to understand context. If it is a product page (/products/{handle}), "
+            "match the handle to the catalog and treat that product as what the customer is "
+            'referring to when they say "this jersey", "it", "this", etc. '
+            "Only use this when relevant — for general questions, ignore it."
+        )
+    return instruction
 
 
-def gemini_generate(history):
+def gemini_generate(history, current_page: str | None = None):
     """Try each model in order; fall to the next if one fails (e.g. 503 overloaded)."""
-    system_instruction = build_system_instruction()
+    system_instruction = build_system_instruction(current_page)
     last_error = None
     for model_name in MODELS:
         try:
@@ -216,11 +225,11 @@ def gemini_generate(history):
     raise last_error
 
 
-def run_loop(session_id: str, history):
+def run_loop(session_id: str, history, current_page: str | None = None):
     """Run the tool-use loop over a prepared history. Returns (text, escalated)."""
     escalated = False
     for _ in range(5):
-        response = gemini_generate(history)
+        response = gemini_generate(history, current_page)
         content = response.candidates[0].content
         history.append(content)
 
@@ -307,6 +316,10 @@ def chat(req: ChatRequest):
     stored_text = req.message or ("[התקבלה תמונה]" if req.image_base64 else "")
     db.add_message(req.session_id, "user", stored_text, image_url)
 
+    # Record the customer's current page (for the admin inbox)
+    if req.current_page:
+        db.set_last_page(req.session_id, req.current_page)
+
     # If a human is handling it (and it wasn't just auto-handed-back), bot stays silent
     if was_escalated and not auto_handback:
         return ChatResponse(reply="", session_id=req.session_id, escalated=True)
@@ -322,7 +335,7 @@ def chat(req: ChatRequest):
     user_parts.append(types.Part(text=req.message or "הלקוח שלח תמונה. בדוק אותה ועזור בהתאם."))
     history.append(types.Content(role="user", parts=user_parts))
 
-    text, escalated = run_loop(req.session_id, history)
+    text, escalated = run_loop(req.session_id, history, req.current_page)
 
     # Re-check: if a human took over DURING generation, discard the bot's answer
     fresh = db.get_session(req.session_id)
@@ -355,6 +368,7 @@ def history(session_id: str):
                 "role": m["role"],
                 "content": m["content"],
                 "image_data": m.get("image_data"),
+                "created_at": m.get("created_at"),
             })
     return {"messages": out}
 
@@ -471,6 +485,7 @@ ADMIN_HTML = """
     <div id="sessions"></div>
   </div>
   <div class="conv">
+    <div id="pagebar" style="display:none;padding:8px 14px;background:#fff;border-bottom:1px solid #eee;font-size:13px;color:#555;"></div>
     <div class="msgs" id="msgs"><div class="empty">בחר שיחה מהרשימה</div></div>
     <div class="composer">
       <input id="reply" placeholder="כתוב תשובה ללקוח..." onkeydown="if(event.key==='Enter')sendReply()">
@@ -503,11 +518,12 @@ ADMIN_HTML = """
           div.onclick = ()=>openConv(s.session_id);
           div.innerHTML =
             '<div class="top"><span class="badge '+s.status+'">'+s.status+'</span>'+
-            '<span style="font-size:11px;color:#aaa">'+(s.message_count||0)+' הודעות</span></div>'+
+            '<span style="font-size:11px;color:#aaa">'+fmtTime(s.updated_at)+'</span></div>'+
             '<div class="preview">'+(s.last_message||'')+'</div>';
           box.appendChild(div);
         });
         updateToggle();
+        updatePageBar();
       });
   }
 
@@ -526,11 +542,21 @@ ADMIN_HTML = """
     }
   }
 
+  function updatePageBar(){
+    const bar = document.getElementById('pagebar');
+    if(!bar) return;
+    const s = sessionsData.find(x=>x.session_id===current);
+    if(!s || !s.last_page){ bar.style.display='none'; return; }
+    bar.style.display='block';
+    bar.innerHTML = '📍 דף אחרון: <a href="'+s.last_page+'" target="_blank" style="color:#06c;word-break:break-all">'+s.last_page+'</a>';
+  }
+
   function openConv(id){
     current = id;
     loadSessions();
     loadMsgs();
     updateToggle();
+    updatePageBar();
   }
 
   function loadMsgs(){
@@ -539,13 +565,25 @@ ADMIN_HTML = """
       .then(r=>r.json()).then(d=>{
         const box = document.getElementById('msgs');
         box.innerHTML = '';
+        let lastDay = null;
         (d.messages||[]).forEach(m=>{
+          if (m.created_at) {
+            const k = dateKey(m.created_at);
+            if (k !== lastDay) {
+              lastDay = k;
+              const sep = document.createElement('div');
+              sep.style.cssText = 'align-self:center;background:#e8e8e8;color:#666;font-size:11px;padding:3px 10px;border-radius:10px;margin:6px 0;';
+              sep.textContent = dateLabel(m.created_at);
+              box.appendChild(sep);
+            }
+          }
           const who = m.role==='user'?'לקוח':(m.role==='human'?'אתה':'בוט');
           const div = document.createElement('div');
           div.className = 'm ' + m.role;
           let html = '<div class="who">'+who+'</div>';
           if (m.content) html += escapeHtml(m.content);
           if (m.image_data) html += '<br><img src="'+m.image_data+'" style="max-width:200px;border-radius:8px;margin-top:6px">';
+          if (m.created_at) html += '<div style="font-size:10px;opacity:.55;margin-top:4px;text-align:left">'+fmtTime(m.created_at)+'</div>';
           div.innerHTML = html;
           box.appendChild(div);
         });
@@ -579,6 +617,21 @@ ADMIN_HTML = """
 
   function escapeHtml(s){
     return s.replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  }
+
+  function fmtTime(ts){
+    if(!ts) return '';
+    try { return new Date(ts).toLocaleTimeString('he-IL',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Jerusalem'}); }
+    catch(e){ return ''; }
+  }
+  function dateKey(ts){
+    return new Date(ts).toLocaleDateString('en-CA',{timeZone:'Asia/Jerusalem'});
+  }
+  function dateLabel(ts){
+    const k = dateKey(ts), today = dateKey(Date.now()), yest = dateKey(Date.now()-86400000);
+    if(k===today) return 'היום';
+    if(k===yest) return 'אתמול';
+    return new Date(ts).toLocaleDateString('he-IL',{day:'numeric',month:'numeric',year:'numeric',timeZone:'Asia/Jerusalem'});
   }
 
   loadSessions();
