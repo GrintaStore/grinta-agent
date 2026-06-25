@@ -90,6 +90,17 @@ def touch_session(session_id: str) -> None:
     )
 
 
+def set_last_page(session_id: str, url_value: str) -> None:
+    """Store the customer's most recent page URL on the session."""
+    url = f"{_REST}/sessions?session_id=eq.{session_id}"
+    requests.patch(
+        url,
+        headers=_headers({"Prefer": "return=minimal"}),
+        json={"last_page": url_value},
+        timeout=20,
+    )
+
+
 def list_sessions(only_escalated: bool = False) -> list:
     url = f"{_REST}/session_overview?order=updated_at.desc&limit=100"
     if only_escalated:
@@ -155,7 +166,7 @@ def get_new_messages_after(session_id: str, after_id: int) -> list:
     """Return assistant + human messages newer than after_id (for widget polling)."""
     url = (
         f"{_REST}/messages?session_id=eq.{session_id}"
-        f"&role=in.(human,assistant)&id=gt.{after_id}&order=id.asc&select=id,role,content,image_data"
+        f"&role=in.(human,assistant)&id=gt.{after_id}&order=id.asc&select=id,role,content,image_data,created_at"
     )
     res = requests.get(url, headers=_headers(), timeout=20)
     return res.json() if res.status_code == 200 else []
