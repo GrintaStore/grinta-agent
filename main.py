@@ -442,7 +442,7 @@ ADMIN_HTML = """
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Grinta — תיבת פניות</title>
 <style>
-  :root { --black:#0a0a0a; --gold:#c9a227; --gray:#f4f4f4; }
+  :root { --black:#0a0a0a; --gold:#E0B252; --gray:#f4f4f4; }
   * { box-sizing: border-box; }
   body { margin:0; font-family:'Heebo',Arial,sans-serif; background:var(--gray); color:#1a1a1a; }
   header { background:var(--black); color:#fff; padding:14px 20px; border-bottom:2px solid var(--gold); }
