@@ -153,15 +153,6 @@ def get_messages(session_id: str) -> list:
     return res.json() if res.status_code == 200 else []
 
 
-def get_human_messages_after(session_id: str, after_id: int) -> list:
-    url = (
-        f"{_REST}/messages?session_id=eq.{session_id}"
-        f"&role=eq.human&id=gt.{after_id}&order=id.asc&select=id,content,created_at"
-    )
-    res = requests.get(url, headers=_headers(), timeout=20)
-    return res.json() if res.status_code == 200 else []
-
-
 def get_new_messages_after(session_id: str, after_id: int) -> list:
     """Return assistant + human messages newer than after_id (for widget polling)."""
     url = (
