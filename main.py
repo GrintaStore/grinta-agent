@@ -6,6 +6,7 @@ import smtplib
 import threading
 import time
 import tools
+import requests
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from email.mime.text import MIMEText
@@ -49,24 +50,35 @@ ZOHO_USER         = os.environ.get("ZOHO_USER", "")
 ZOHO_APP_PASSWORD = os.environ.get("ZOHO_APP_PASSWORD", "")
 NOTIFY_EMAIL      = os.environ.get("NOTIFY_EMAIL", "")
 ADMIN_URL         = os.environ.get("ADMIN_URL", "https://grinta-agent.onrender.com/admin")
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+EMAIL_FROM     = os.environ.get("EMAIL_FROM", "Grinta <contact@grinta.co.il>")
 
 # ─────────────────────────────────────────────
 # Email notification
 # ─────────────────────────────────────────────
 def _send_email(subject: str, body: str) -> None:
-    if not (ZOHO_USER and ZOHO_APP_PASSWORD and NOTIFY_EMAIL):
-        print("[email] SMTP not configured — skipping")
+    if not (RESEND_API_KEY and NOTIFY_EMAIL):
+        print("[email] Resend not configured — skipping")
         return
     try:
-        msg = MIMEText(body, "plain", "utf-8")
-        msg["Subject"] = subject
-        msg["From"]    = formataddr(("Grinta Agent", ZOHO_USER))
-        msg["To"]      = NOTIFY_EMAIL
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as server:
-            server.starttls()
-            server.login(ZOHO_USER, ZOHO_APP_PASSWORD)
-            server.sendmail(ZOHO_USER, [NOTIFY_EMAIL], msg.as_string())
-        print("[email] sent")
+        res = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": EMAIL_FROM,
+                "to": [NOTIFY_EMAIL],
+                "subject": subject,
+                "text": body,
+            },
+            timeout=20,
+        )
+        if res.status_code in (200, 201):
+            print("[email] sent")
+        else:
+            print(f"[email] failed {res.status_code}: {res.text[:200]}")
     except Exception as e:
         print(f"[email] failed: {e}")
 
