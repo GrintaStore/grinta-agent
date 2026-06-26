@@ -565,7 +565,7 @@ ADMIN_HTML = """
     if(!current) return;
     fetch('/admin/api/messages?session_id=' + encodeURIComponent(current))
       .then(r=>r.json()).then(d=>{
-        const box = document.getElementById('msgs');
+        const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
         box.innerHTML = '';
         let lastDay = null;
         (d.messages||[]).forEach(m=>{
@@ -589,7 +589,7 @@ ADMIN_HTML = """
           div.innerHTML = html;
           box.appendChild(div);
         });
-        box.scrollTop = box.scrollHeight;
+        if (nearBottom) box.scrollTop = box.scrollHeight;
       });
   }
 
