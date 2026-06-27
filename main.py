@@ -471,6 +471,21 @@ def admin_reply(req: ReplyRequest, _: bool = Depends(check_admin)):
     return {"ok": True}
 
 
+@app.post("/admin/api/generate")
+def admin_generate(req: ReplyRequest, _: bool = Depends(check_admin)):
+    # Build history from the conversation and run the agent, but DON'T save —
+    # this is a draft for the human to review/edit before sending.
+    history = build_history(req.session_id, skip_last_user=False)
+    if not history:
+        return {"draft": ""}
+    try:
+        text, _ = run_loop(req.session_id, history)
+    except Exception as e:
+        print(f"[generate] error: {e}")
+        return {"draft": "", "error": str(e)}
+    return {"draft": text}
+
+
 @app.post("/admin/api/handback")
 def admin_handback(req: ReplyRequest, _: bool = Depends(check_admin)):
     db.set_status(req.session_id, "bot")
@@ -526,7 +541,7 @@ ADMIN_HTML = """
   .m.assistant { align-self:flex-end; background:var(--black); color:#fff; }
   .m.human { align-self:flex-end; background:var(--gold); color:#0a0a0a; }
   .m .who { font-size:10px; opacity:.6; margin-bottom:3px; }
-  .composer { display:flex; gap:8px; padding:12px; background:#fff; border-top:1px solid #e2e2e2; }
+  .composer { display:flex; flex-wrap:wrap; gap:8px; padding:12px; background:#fff; border-top:1px solid #e2e2e2; }
   .composer input { flex:1; padding:11px 14px; border:1px solid #d8d8d8; border-radius:22px; font-family:inherit; font-size:14px; }
   .composer button { padding:0 18px; border:none; border-radius:22px; background:var(--gold); cursor:pointer; font-weight:700; }
   .composer .hb { background:#eee; }
@@ -548,8 +563,9 @@ ADMIN_HTML = """
     <div class="msgs" id="msgs"><div class="empty">בחר שיחה מהרשימה</div></div>
     <div class="composer">
       <input id="reply" placeholder="כתוב תשובה ללקוח..." onkeydown="if(event.key==='Enter')sendReply()">
-      <button onclick="sendReply()">שלח</button>
-      <button class="hb" id="toggleBtn" style="display:none">✋ קח שליטה</button>
+        <button id="genBtn" onclick="generateDraft()" style="background:#0a0a0a;color:var(--gold)">✨ צור טיוטה</button>
+        <button onclick="sendReply()">שלח</button>
+        <button class="hb" id="toggleBtn" style="display:none">✋ קח שליטה</button>
     </div>
   </div>
 </div>
@@ -663,6 +679,23 @@ ADMIN_HTML = """
       body: JSON.stringify({session_id: current, content: text})})
       .then(()=>loadMsgs());
   }
+
+    function generateDraft(){
+      if(!current) return;
+      var btn = document.getElementById('genBtn');
+      var old = btn.textContent;
+      btn.textContent = '...חושב';
+      btn.disabled = true;
+      fetch('/admin/api/generate', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({session_id: current, content: ''})})
+        .then(r=>r.json())
+        .then(d=>{
+          if(d.draft){ document.getElementById('reply').value = d.draft; }
+          else { alert('לא הצלחתי לייצר טיוטה' + (d.error ? ': '+d.error : '')); }
+        })
+        .catch(()=>alert('שגיאה בחיבור'))
+        .finally(()=>{ btn.textContent = old; btn.disabled = false; });
+    }
 
   function handback(){
     if(!current) return;
