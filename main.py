@@ -215,12 +215,12 @@ def build_system_instruction(current_page: str | None = None) -> str:
 
 
 def gemini_generate(history, current_page: str | None = None):
-    """Try each model in order; fall to the next if one fails (e.g. 503 overloaded)."""
+    """Try each model in order; fall to the next if one fails (503) or returns empty content."""
     system_instruction = build_system_instruction(current_page)
     last_error = None
     for model_name in MODELS:
         try:
-            return client.models.generate_content(
+            resp = client.models.generate_content(
                 model=model_name,
                 contents=history,
                 config=types.GenerateContentConfig(
@@ -228,6 +228,16 @@ def gemini_generate(history, current_page: str | None = None):
                     tools=TOOLS,
                 )
             )
+            # A response can come back "successful" but empty (safety block,
+            # max tokens, etc.) with content.parts = None. Treat that as a
+            # failure so we fall through to the next model instead of crashing.
+            cand = (resp.candidates or [None])[0]
+            if cand is None or cand.content is None or cand.content.parts is None:
+                fr = getattr(cand, "finish_reason", None) if cand else None
+                print(f"[model] {model_name} returned no content (finish_reason={fr}) — trying next")
+                last_error = RuntimeError(f"empty response from {model_name} (finish_reason={fr})")
+                continue
+            return resp
         except Exception as e:
             last_error = e
             print(f"[model] {model_name} failed: {str(e)[:120]} — trying next")
@@ -244,10 +254,11 @@ def run_loop(session_id: str, history, current_page: str | None = None):
         content = response.candidates[0].content
         history.append(content)
 
-        tool_calls = [p for p in content.parts if p.function_call is not None]
+        parts = content.parts or []
+        tool_calls = [p for p in parts if p.function_call is not None]
 
         if not tool_calls:
-            text = "".join(p.text for p in content.parts if p.text).strip()
+            text = "".join(p.text for p in parts if p.text).strip()
             return text, escalated
 
         tool_response_parts = []
@@ -395,7 +406,7 @@ async def email_inbound(req: Request, token: str = ""):
 
     email_id = data.get("email_id") or data.get("id") or ""
     full     = fetch_inbound_email(email_id) if email_id else {}
-    
+
     subject = (full.get("subject") or data.get("subject") or "").strip() or "(ללא נושא)"
     body    = (full.get("text") or full.get("html") or "").strip()
     stored  = f"נושא: {subject}\n\n{body}"
