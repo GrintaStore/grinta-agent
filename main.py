@@ -556,10 +556,13 @@ ADMIN_HTML = """
           const div = document.createElement('div');
           div.className = 'sess' + (s.session_id===current ? ' active':'');
           div.onclick = ()=>openConv(s.session_id);
-          div.innerHTML =
-            '<div class="top"><span class="badge '+s.status+'">'+s.status+'</span>'+
-            '<span style="font-size:11px;color:#aaa">'+fmtTime(s.updated_at)+'</span></div>'+
-            '<div class="preview">'+(s.last_message||'')+'</div>';
+        var chan = s.channel==='email'
+          ? '<span class="badge" style="background:#e7f6e7;color:#1a7a3a;margin-left:4px">📧 מייל</span>'
+          : '';
+        div.innerHTML =
+          '<div class="top"><span>'+chan+'<span class="badge '+s.status+'">'+s.status+'</span></span>'+
+          '<span style="font-size:11px;color:#aaa">'+fmtTime(s.updated_at)+'</span></div>'+
+          '<div class="preview">'+(s.customer_email ? s.customer_email+' — ' : '')+(s.last_message||'')+'</div>';
           box.appendChild(div);
         });
         updateToggle();
@@ -603,6 +606,7 @@ ADMIN_HTML = """
     if(!current) return;
     fetch('/admin/api/messages?session_id=' + encodeURIComponent(current))
       .then(r=>r.json()).then(d=>{
+        const box = document.getElementById('msgs');
         const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
         box.innerHTML = '';
         let lastDay = null;
