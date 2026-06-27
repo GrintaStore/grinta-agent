@@ -2,15 +2,12 @@ import os
 import json
 import base64
 import secrets
-import smtplib
 import threading
 import time
 import tools
 import requests
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-from email.mime.text import MIMEText
-from email.utils import formataddr
 
 from google import genai
 from google.genai import types
