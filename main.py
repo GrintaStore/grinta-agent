@@ -6,12 +6,13 @@ import threading
 import time
 import tools
 import requests
+import re
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
 from google import genai
 from google.genai import types
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -47,6 +48,7 @@ NOTIFY_EMAIL      = os.environ.get("NOTIFY_EMAIL", "")
 ADMIN_URL         = os.environ.get("ADMIN_URL", "https://grinta-agent.onrender.com/admin")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 EMAIL_FROM     = os.environ.get("EMAIL_FROM", "Grinta <contact@grinta.co.il>")
+RESEND_WEBHOOK_TOKEN = os.environ.get("RESEND_WEBHOOK_TOKEN", "")
 
 # ─────────────────────────────────────────────
 # Email notification
