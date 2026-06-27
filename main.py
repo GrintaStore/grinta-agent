@@ -360,6 +360,35 @@ def chat(req: ChatRequest):
     return ChatResponse(reply=text, session_id=req.session_id, escalated=escalated, reply_id=reply_id)
 
 
+@app.post("/email/inbound")
+async def email_inbound(req: Request, token: str = ""):
+    # simple shared-secret check (token is in the webhook URL)
+    if RESEND_WEBHOOK_TOKEN and token != RESEND_WEBHOOK_TOKEN:
+        raise HTTPException(status_code=401, detail="bad token")
+
+    payload = await req.json()
+    if payload.get("type") != "email.received":
+        return {"ok": True}  # ignore non-inbound events
+
+    data = payload.get("data", {})
+    from_raw = data.get("from", "") or ""
+    m = re.search(r"<([^>]+)>", from_raw)
+    from_email = (m.group(1) if m else from_raw).strip().lower()
+    if not from_email:
+        return {"ok": True}
+
+    subject = (data.get("subject") or "").strip() or "(ללא נושא)"
+    body    = (data.get("text") or data.get("html") or "").strip()
+    stored  = f"נושא: {subject}\n\n{body}"
+
+    session_id = f"email-{from_email}"
+    db.ensure_session(session_id)
+    db.set_email_meta(session_id, from_email, subject)
+    db.add_message(session_id, "user", stored)
+    db.set_status(session_id, "escalated", "פנייה במייל")
+    return {"ok": True}
+
+
 @app.get("/poll")
 def poll(session_id: str, after_id: int = 0):
     """Return new assistant + human messages after a cursor (for the widget)."""
