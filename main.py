@@ -182,6 +182,40 @@ class ChatResponse(BaseModel):
 def root():
     return {"status": "Grinta CS Agent is running"}
 
+@app.get("/debug/email")
+def debug_email(_: bool = Depends(check_admin)):
+    import requests as req
+    key = RESEND_API_KEY
+    from_addr = EMAIL_FROM
+    notify = NOTIFY_EMAIL
+    
+    print(f"[debug] RESEND_API_KEY: '{key[:8]}...' (len={len(key)})")
+    print(f"[debug] EMAIL_FROM: '{from_addr}'")
+    print(f"[debug] NOTIFY_EMAIL: '{notify}'")
+    
+    res = req.post(
+        "https://api.resend.com/emails",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "from": from_addr,
+            "to": [notify],
+            "subject": "Grinta debug test",
+            "text": "If you got this, email works.",
+        },
+        timeout=20,
+    )
+    
+    return {
+        "status_code": res.status_code,
+        "response": res.json(),
+        "key_prefix": key[:8],
+        "key_length": len(key),
+        "from": from_addr,
+        "to": notify,
+    }
 
 def build_history(session_id: str, skip_last_user: bool):
     msgs = db.get_messages(session_id)
