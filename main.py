@@ -80,6 +80,36 @@ def _send_email(subject: str, body: str) -> None:
         print(f"[email] failed: {e}")
 
 
+def send_customer_email(to_email: str, subject: str, body: str) -> bool:
+    """Send a reply to a customer from contact@grinta.co.il via Resend."""
+    if not RESEND_API_KEY:
+        print("[customer email] Resend not configured")
+        return False
+    reply_subject = subject if subject.lower().startswith("re:") else f"Re: {subject}"
+    try:
+        res = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": EMAIL_FROM,
+                "to": [to_email],
+                "subject": reply_subject,
+                "text": body,
+            },
+            timeout=20,
+        )
+        if res.status_code in (200, 201):
+            print(f"[customer email] sent to {to_email}")
+            return True
+        print(f"[customer email] failed {res.status_code}: {res.text[:200]}")
+    except Exception as e:
+        print(f"[customer email] error: {e}")
+    return False
+
+
 def notify_escalation(session_id: str, reason: str, summary: str) -> None:
     subject = "🔴 פנייה חדשה דורשת טיפול — Grinta"
     body = (
@@ -479,6 +509,17 @@ def admin_messages(session_id: str, _: bool = Depends(check_admin)):
 @app.post("/admin/api/reply")
 def admin_reply(req: ReplyRequest, _: bool = Depends(check_admin)):
     db.add_message(req.session_id, "human", req.content)
+
+    # If this is an email conversation, actually email the reply to the customer.
+    sess = db.get_session(req.session_id)
+    if sess and sess.get("channel") == "email" and sess.get("customer_email"):
+        ok = send_customer_email(
+            sess["customer_email"],
+            sess.get("email_subject") or "פנייתך ל-Grinta",
+            req.content,
+        )
+        return {"ok": True, "emailed": ok}
+
     return {"ok": True}
 
 
@@ -696,7 +737,12 @@ ADMIN_HTML = """
     inp.value='';
     fetch('/admin/api/reply', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({session_id: current, content: text})})
-      .then(()=>loadMsgs());
+      .then(r=>r.json())
+      .then(d=>{
+        if(d.emailed === false){ alert('נשמר, אך שליחת המייל ללקוח נכשלה — בדוק את הלוגים'); }
+        loadMsgs();
+      })
+      .catch(()=>{ alert('שגיאה בשליחה'); loadMsgs(); });
   }
 
     function generateDraft(){
