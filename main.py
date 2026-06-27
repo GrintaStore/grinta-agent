@@ -97,7 +97,7 @@ EMAIL_TEMPLATE = """<!DOCTYPE html>
     body, table, td, a { -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
     table, td { mso-table-lspace:0pt; mso-table-rspace:0pt; }
     img { border:0; outline:none; text-decoration:none; }
-    body { margin:0; padding:0; width:100% !important; height:100% !important; background-color:#e8e3d8; direction:rtl; }
+    body { margin:0; padding:0; width:100% !important; height:100% !important; background-color:#ffffff; direction:rtl; }
     @media only screen and (max-width:600px) {
       .gr-container { width:100% !important; }
       .gr-px { padding-left:24px !important; padding-right:24px !important; }
@@ -106,7 +106,7 @@ EMAIL_TEMPLATE = """<!DOCTYPE html>
 </head>
 <body>
   <div style="display:none; max-height:0; overflow:hidden; opacity:0;">הודעה חדשה מ-Grinta</div>
-  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#e8e3d8;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#ffffff;">
     <tr>
       <td align="center" style="padding:28px 12px;">
         <table class="gr-container" width="520" cellpadding="0" cellspacing="0" style="max-width:520px; background:#ffffff; border-radius:14px; overflow:hidden;">
