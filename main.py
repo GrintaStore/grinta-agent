@@ -360,6 +360,22 @@ def chat(req: ChatRequest):
     return ChatResponse(reply=text, session_id=req.session_id, escalated=escalated, reply_id=reply_id)
 
 
+def fetch_inbound_email(email_id: str) -> dict:
+    """Resend's email.received webhook is metadata-only; fetch the full body here."""
+    try:
+        res = requests.get(
+            f"https://api.resend.com/emails/receiving/{email_id}",
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+            timeout=20,
+        )
+        if res.status_code == 200:
+            return res.json()
+        print(f"[inbound fetch] failed {res.status_code}: {res.text[:200]}")
+    except Exception as e:
+        print(f"[inbound fetch] error: {e}")
+    return {}
+
+
 @app.post("/email/inbound")
 async def email_inbound(req: Request, token: str = ""):
     # simple shared-secret check (token is in the webhook URL)
@@ -377,8 +393,11 @@ async def email_inbound(req: Request, token: str = ""):
     if not from_email:
         return {"ok": True}
 
-    subject = (data.get("subject") or "").strip() or "(ללא נושא)"
-    body    = (data.get("text") or data.get("html") or "").strip()
+    email_id = data.get("email_id") or data.get("id") or ""
+    full     = fetch_inbound_email(email_id) if email_id else {}
+    
+    subject = (full.get("subject") or data.get("subject") or "").strip() or "(ללא נושא)"
+    body    = (full.get("text") or full.get("html") or "").strip()
     stored  = f"נושא: {subject}\n\n{body}"
 
     session_id = f"email-{from_email}"
