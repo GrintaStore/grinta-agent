@@ -484,17 +484,25 @@ def admin_reply(req: ReplyRequest, _: bool = Depends(check_admin)):
 
 @app.post("/admin/api/generate")
 def admin_generate(req: ReplyRequest, _: bool = Depends(check_admin)):
-    # Build history from the conversation and run the agent, but DON'T save —
-    # this is a draft for the human to review/edit before sending.
+    # Build history from the conversation, then append an explicit instruction
+    # so the model always has a concrete task — otherwise, if the conversation
+    # already ends with a reply, the model returns an empty STOP completion.
     history = build_history(req.session_id, skip_last_user=False)
     if not history:
         return {"draft": ""}
+    history.append(types.Content(
+        role="user",
+        parts=[types.Part(text=(
+            "כתוב טיוטת תשובה ללקוח על סמך השיחה עד כה. "
+            "החזר רק את נוסח התשובה ללקוח, ללא הקדמות או הסברים."
+        ))]
+    ))
     try:
         text, _ = run_loop(req.session_id, history)
     except Exception as e:
         print(f"[generate] error: {e}")
         return {"draft": "", "error": str(e)}
-    return {"draft": text}
+    return {"draft": text or ""}
 
 
 @app.post("/admin/api/handback")
