@@ -46,8 +46,6 @@ MODELS = [
 # Config
 # ─────────────────────────────────────────────
 ADMIN_PASSWORD    = os.environ.get("ADMIN_PASSWORD", "grinta123")
-ZOHO_USER         = os.environ.get("ZOHO_USER", "")
-ZOHO_APP_PASSWORD = os.environ.get("ZOHO_APP_PASSWORD", "")
 NOTIFY_EMAIL      = os.environ.get("NOTIFY_EMAIL", "")
 ADMIN_URL         = os.environ.get("ADMIN_URL", "https://grinta-agent.onrender.com/admin")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
@@ -403,42 +401,6 @@ def check_admin(creds: HTTPBasicCredentials = Depends(security)):
             headers={"WWW-Authenticate": "Basic"},
         )
     return True
-
-
-@app.get("/debug/email")
-def debug_email(_: bool = Depends(check_admin)):
-    import requests as req
-    key = RESEND_API_KEY
-    from_addr = EMAIL_FROM
-    notify = NOTIFY_EMAIL
-    
-    print(f"[debug] RESEND_API_KEY: '{key[:8]}...' (len={len(key)})")
-    print(f"[debug] EMAIL_FROM: '{from_addr}'")
-    print(f"[debug] NOTIFY_EMAIL: '{notify}'")
-    
-    res = req.post(
-        "https://api.resend.com/emails",
-        headers={
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "from": from_addr,
-            "to": [notify],
-            "subject": "Grinta debug test",
-            "text": "If you got this, email works.",
-        },
-        timeout=20,
-    )
-    
-    return {
-        "status_code": res.status_code,
-        "response": res.json(),
-        "key_prefix": key[:8],
-        "key_length": len(key),
-        "from": from_addr,
-        "to": notify,
-    }
 
 
 class ReplyRequest(BaseModel):
