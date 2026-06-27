@@ -80,6 +80,133 @@ def _send_email(subject: str, body: str) -> None:
         print(f"[email] failed: {e}")
 
 
+# Branded HTML wrapper for customer replies. The reply text is inserted at
+# __GR_BODY__ (already HTML-escaped, newlines -> <br>). No order/tracking parts.
+EMAIL_TEMPLATE = """<!DOCTYPE html>
+<html lang="he" dir="rtl" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>הודעה מ-Grinta</title>
+  <!--[if mso]>
+  <style type="text/css">
+    table, td, div, p, a, span { font-family: Tahoma, Arial, sans-serif !important; }
+  </style>
+  <![endif]-->
+  <style>
+    body, table, td, a { -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
+    table, td { mso-table-lspace:0pt; mso-table-rspace:0pt; }
+    img { border:0; outline:none; text-decoration:none; }
+    body { margin:0; padding:0; width:100% !important; height:100% !important; background-color:#f3eee3; direction:rtl; }
+    .gr-btn:hover { background-color:#b58b3e !important; }
+    @media only screen and (max-width:600px) {
+      .gr-container { width:100% !important; }
+      .gr-px { padding-left:22px !important; padding-right:22px !important; }
+      .gr-h1 { font-size:24px !important; line-height:30px !important; }
+    }
+  </style>
+</head>
+<body>
+  <div style="display:none; max-height:0; overflow:hidden; opacity:0;">הודעה חדשה מ-Grinta</div>
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f3eee3;">
+    <tr>
+      <td align="center" style="padding:24px 12px;">
+        <table class="gr-container" width="600" cellpadding="0" cellspacing="0" style="max-width:600px; background:#ffffff; border-radius:18px; overflow:hidden; box-shadow:0 8px 30px rgba(13,13,13,0.10);">
+
+          <!-- Header -->
+          <tr>
+            <td align="center" style="padding:32px 32px 16px;">
+              <a href="https://grinta.co.il">
+                <img src="https://cdn.shopify.com/s/files/1/0809/9633/5859/files/logo_transparent_cut_b4935059-4a03-4dd7-9a3a-122897ef8959.png?v=1780164862" height="80" style="display:block;">
+              </a>
+            </td>
+          </tr>
+
+          <!-- Black bar -->
+          <tr>
+            <td align="center" style="background:#0d0d0d; padding:14px;">
+              <span style="color:#c6a15b; font-family:Tahoma,sans-serif; font-size:15px; font-weight:700;">שירות לקוחות · Grinta</span>
+            </td>
+          </tr>
+
+          <!-- Gold stripe -->
+          <tr>
+            <td style="height:4px; background:linear-gradient(90deg,#a87f3c,#e3c987,#a87f3c);"></td>
+          </tr>
+
+          <!-- Title -->
+          <tr>
+            <td class="gr-px" style="padding:36px 40px 12px; text-align:right;">
+              <h1 class="gr-h1" style="margin:0; font-family:Tahoma,sans-serif; font-size:28px; line-height:36px; color:#0d0d0d;">💬 יש לנו הודעה עבורך</h1>
+            </td>
+          </tr>
+
+          <!-- Message box -->
+          <tr>
+            <td class="gr-px" style="padding:12px 40px 24px;">
+              <table width="100%" cellpadding="0" cellspacing="0" style="background:#fdfbf6; border:1px solid #ece4d3; border-radius:12px;">
+                <tr>
+                  <td style="padding:18px 20px; text-align:right; font-family:Tahoma,sans-serif; font-size:15px; line-height:26px; color:#0d0d0d;">__GR_BODY__</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Reply button -->
+          <tr>
+            <td align="center" style="padding:0 40px 30px;">
+              <a href="mailto:contact@grinta.co.il" class="gr-btn"
+                 style="display:inline-block; background:#c6a15b; color:#0d0d0d; font-family:Tahoma,sans-serif; font-size:16px; font-weight:700; padding:14px 44px; border-radius:50px; text-decoration:none;">השב למייל</a>
+            </td>
+          </tr>
+
+          <!-- Instagram -->
+          <tr>
+            <td style="padding:0 40px 24px;">
+              <table width="100%" cellpadding="0" cellspacing="0" style="background:#fdfbf6; border:1px solid #ece4d3; border-radius:14px;">
+                <tr>
+                  <td align="center" style="padding:24px;">
+                    <div style="font-size:28px;">📸</div>
+                    <div style="font-family:Tahoma,sans-serif; font-size:18px; font-weight:700; margin-top:10px;">עקבו אחרינו באינסטגרם</div>
+                    <div style="font-family:Tahoma,sans-serif; font-size:14px; margin-top:8px; color:#4a4339;">חדשות, מבצעים והחולצות הכי חמות</div>
+                    <a href="https://www.instagram.com/grinta.co.il/"
+                       style="display:inline-block; margin-top:16px; background:#0d0d0d; color:#c6a15b; padding:12px 32px; border-radius:50px; text-decoration:none; font-weight:700;">@grinta.co.il ←</a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background:#0d0d0d; border-top:3px solid #c6a15b; padding:28px 40px 30px;" align="center">
+              <div style="font-family:Tahoma,sans-serif; font-size:18px; font-weight:700; letter-spacing:3px; color:#ffffff;">GRINTA</div>
+              <div style="margin-top:14px; text-align:center; font-family:Tahoma,sans-serif;">
+                <a href="https://www.grinta.co.il" style="color:#c6a15b; text-decoration:none; font-size:13px; padding:0 8px;">החנות</a>
+                <span style="color:#4a4339;">|</span>
+                <a href="https://www.instagram.com/grinta.co.il/" style="color:#c6a15b; text-decoration:none; font-size:13px; padding:0 8px;">אינסטגרם</a>
+                <span style="color:#4a4339;">|</span>
+                <a href="https://grinta.co.il/pages/contact-us" style="color:#c6a15b; text-decoration:none; font-size:13px; padding:0 8px;">צור קשר</a>
+              </div>
+              <p style="margin:16px 0 0; font-family:Tahoma,sans-serif; font-size:11px; line-height:18px; color:#8a8170;">© 2026 Grinta · כל הזכויות שמורות</p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+
+
+def render_email_html(body_text: str) -> str:
+    """Wrap a plain-text reply in the branded Grinta HTML shell."""
+    safe = (body_text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    safe = safe.replace("\n", "<br>")
+    return EMAIL_TEMPLATE.replace("__GR_BODY__", safe)
+
+
 def send_customer_email(to_email: str, subject: str, body: str) -> bool:
     """Send a reply to a customer from contact@grinta.co.il via Resend."""
     if not RESEND_API_KEY:
@@ -97,6 +224,7 @@ def send_customer_email(to_email: str, subject: str, body: str) -> bool:
                 "from": EMAIL_FROM,
                 "to": [to_email],
                 "subject": reply_subject,
+                "html": render_email_html(body),
                 "text": body,
             },
             timeout=20,
