@@ -721,7 +721,7 @@ ADMIN_HTML = """
     <div id="pagebar" style="display:none;padding:8px 14px;background:#fff;border-bottom:1px solid #eee;font-size:13px;color:#555;"></div>
     <div class="msgs" id="msgs"><div class="empty">בחר שיחה מהרשימה</div></div>
     <div class="composer">
-      <textarea id="reply" placeholder="כתוב תשובה ללקוח..." rows="2" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendReply();}"></textarea>
+      <textarea id="reply" placeholder="כתוב תשובה ללקוח..." rows="2"></textarea>
         <button id="genBtn" onclick="generateDraft()" style="background:#0a0a0a;color:var(--gold)">✨ צור טיוטה</button>
         <button onclick="sendReply()">שלח</button>
         <button class="hb" id="toggleBtn" style="display:none">✋ קח שליטה</button>
