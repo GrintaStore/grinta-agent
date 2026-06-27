@@ -127,6 +127,7 @@ EMAIL_TEMPLATE = """<!DOCTYPE html>
             </td>
           </tr>
 
+__GR_QUOTE_BLOCK__
           <!-- Message -->
           <tr>
             <td class="gr-px" dir="rtl" style="padding:26px 34px 24px; direction:rtl; unicode-bidi:plaintext; text-align:right; font-family:Tahoma,sans-serif; font-size:15px; line-height:27px; color:#1a1a1a;">__GR_BODY__</td>
@@ -171,14 +172,66 @@ EMAIL_TEMPLATE = """<!DOCTYPE html>
 </html>"""
 
 
-def render_email_html(body_text: str) -> str:
-    """Wrap a plain-text reply in the branded Grinta HTML shell."""
-    safe = (body_text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    safe = safe.replace("\n", "<br>")
-    return EMAIL_TEMPLATE.replace("__GR_BODY__", safe)
+# Sub-template for the quoted customer message (inserted at __GR_QUOTE_BLOCK__).
+QUOTE_BLOCK = """          <!-- Quoted customer message -->
+          <tr>
+            <td class="gr-px" dir="rtl" style="padding:22px 34px 0; direction:rtl; unicode-bidi:plaintext; text-align:right;">
+              <div style="font-family:Tahoma,sans-serif; font-size:11px; font-weight:700; color:#a87f3c; margin-bottom:6px;">בתגובה להודעתך</div>
+              <div style="background:#f7f3ea; border-right:3px solid #c6a15b; border-radius:8px; padding:12px 14px; font-family:Tahoma,sans-serif; font-size:13.5px; line-height:24px; color:#6b6357;">__GR_QUOTE_TEXT__</div>
+            </td>
+          </tr>
+"""
 
 
-def send_customer_email(to_email: str, subject: str, body: str) -> bool:
+def _escape_html(s: str) -> str:
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+
+
+def _clean_quote(text: str, max_len: int = 600) -> str:
+    """Reduce a stored inbound message to just the customer's latest text:
+    drop the leading 'נושא:' line we prepend, and cut old quoted reply history."""
+    if not text:
+        return ""
+    t = text.strip()
+    # strip the leading "נושא: ..." line added on inbound
+    t = re.sub(r"^\s*נושא:.*?(?:\n|$)", "", t, count=1).strip()
+    # cut at the first quoted-history marker (Gmail/Outlook, Hebrew + English)
+    markers = [
+        r"\nOn .{0,300}?wrote:",
+        r"\nבתאריך .{0,300}?(?:כתב|כתבה|כתב/ה).{0,80}?:",
+        r"\n-{2,}\s*Original Message\s*-{2,}",
+        r"\n_{5,}",
+        r"\nFrom:\s.+\nSent:\s",
+        r"\n>",
+    ]
+    cut = len(t)
+    for mk in markers:
+        mm = re.search(mk, t, flags=re.IGNORECASE | re.DOTALL)
+        if mm and mm.start() < cut:
+            cut = mm.start()
+    t = t[:cut].strip()
+    # drop any leftover lines that are quoted (start with >)
+    t = "\n".join(ln for ln in t.split("\n") if not ln.lstrip().startswith(">")).strip()
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    if len(t) > max_len:
+        t = t[:max_len].rstrip() + "…"
+    return t
+
+
+def render_email_html(body_text: str, quote_text: str | None = None) -> str:
+    """Wrap a plain-text reply in the branded Grinta HTML shell.
+    If quote_text is given, the customer's message is shown above the reply."""
+    body_html = _escape_html(body_text)
+    if quote_text:
+        quote_block = QUOTE_BLOCK.replace("__GR_QUOTE_TEXT__", _escape_html(quote_text))
+    else:
+        quote_block = ""
+    return (EMAIL_TEMPLATE
+            .replace("__GR_QUOTE_BLOCK__", quote_block)
+            .replace("__GR_BODY__", body_html))
+
+
+def send_customer_email(to_email: str, subject: str, body: str, quote: str | None = None) -> bool:
     """Send a reply to a customer from contact@grinta.co.il via Resend."""
     if not RESEND_API_KEY:
         print("[customer email] Resend not configured")
@@ -195,7 +248,7 @@ def send_customer_email(to_email: str, subject: str, body: str) -> bool:
                 "from": EMAIL_FROM,
                 "to": [to_email],
                 "subject": reply_subject,
-                "html": render_email_html(body),
+                "html": render_email_html(body, quote),
                 "text": body,
             },
             timeout=20,
@@ -612,10 +665,15 @@ def admin_reply(req: ReplyRequest, _: bool = Depends(check_admin)):
     # If this is an email conversation, actually email the reply to the customer.
     sess = db.get_session(req.session_id)
     if sess and sess.get("channel") == "email" and sess.get("customer_email"):
+        # Quote the customer's most recent message (cleaned) for context.
+        msgs = db.get_messages(req.session_id)
+        last_user = next((m["content"] for m in reversed(msgs) if m["role"] == "user"), "")
+        quote = _clean_quote(last_user)
         ok = send_customer_email(
             sess["customer_email"],
             sess.get("email_subject") or "פנייתך ל-Grinta",
             req.content,
+            quote=quote,
         )
         return {"ok": True, "emailed": ok}
 
