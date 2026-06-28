@@ -618,6 +618,27 @@ def parse_contact_form(body: str) -> dict | None:
     return {"name": name, "email": email, "content": content}
 
 
+def _html_to_text(html: str) -> str:
+    """Reduce an HTML email body to readable plain text. Drops <style>/<script>,
+    converts <br> and block ends to newlines, strips all tags, unescapes entities,
+    and collapses excess blank lines."""
+    import html as _htmllib
+    s = html or ""
+    # remove style/script/head blocks entirely (where the huge markup lives)
+    s = re.sub(r"(?is)<(style|script|head)[^>]*>.*?</\1>", " ", s)
+    # line breaks for common block boundaries
+    s = re.sub(r"(?i)<br\s*/?>", "\n", s)
+    s = re.sub(r"(?i)</(p|div|tr|li|h[1-6]|table)>", "\n", s)
+    # drop all remaining tags
+    s = re.sub(r"(?s)<[^>]+>", "", s)
+    s = _htmllib.unescape(s)
+    # tidy whitespace
+    s = re.sub(r"[ \t\u00a0]+", " ", s)
+    s = re.sub(r"\n[ \t]+", "\n", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
+
+
 @app.post("/email/inbound")
 async def email_inbound(req: Request, token: str = ""):
     # simple shared-secret check (token is in the webhook URL)
@@ -645,7 +666,16 @@ async def email_inbound(req: Request, token: str = ""):
     full     = fetch_inbound_email(email_id) if email_id else {}
 
     subject = (full.get("subject") or data.get("subject") or "").strip() or "(ללא נושא)"
-    body    = (full.get("text") or full.get("html") or "").strip()
+
+    text_part = (full.get("text") or "").strip()
+    html_part = (full.get("html") or "").strip()
+    # Use the plain-text part if it's real text. Otherwise (no text part, or a
+    # "text" part that's actually raw HTML) convert the HTML to readable text so
+    # we never store a giant raw-markup blob.
+    if text_part and "<html" not in text_part.lower() and "<body" not in text_part.lower():
+        body = text_part
+    else:
+        body = _html_to_text(html_part or text_part)
 
     # If this is a Shopify contact-form submission, the real customer is INSIDE
     # the body (the From is shopify's mailer). Use the parsed customer instead,
