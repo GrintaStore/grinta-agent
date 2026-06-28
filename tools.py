@@ -56,6 +56,15 @@ def get_order_by_email(email: str) -> dict:
     orders = res.json().get("orders", [])
     if not orders:
         return {"found": False, "message": "No orders found for this email."}
+    cust = orders[0].get("customer") or {}
+    customer = {}
+    if cust:
+        full = " ".join(x for x in [cust.get("first_name"), cust.get("last_name")] if x).strip()
+        customer = {
+            "id": str(cust["id"]) if cust.get("id") else None,
+            "email": cust.get("email") or email,
+            "name": full or None,
+        }
     result = []
     for o in orders:
         tracking = None
@@ -69,7 +78,7 @@ def get_order_by_email(email: str) -> dict:
             "tracking_number": tracking,
             "items": [i["title"] for i in o["line_items"]]
         })
-    return {"found": True, "orders": result}
+    return {"found": True, "orders": result, "customer": customer}
 
 
 def get_order_by_number(order_number: str) -> dict:
@@ -230,6 +239,72 @@ def escalate_to_human(reason: str, summary: str) -> dict:
     }
 
 
+def find_customer_by_email(email: str) -> dict | None:
+    """Return the Shopify customer matching this email, or None."""
+    email = (email or "").strip().lower()
+    if not email:
+        return None
+    url = f"{BASE}/customers/search.json?query=email:{email}"
+    res = requests.get(url, headers=_headers())
+    if res.status_code != 200:
+        print(f"[customer search] failed {res.status_code}: {res.text[:200]}")
+        return None
+    custs = res.json().get("customers", [])
+    return custs[0] if custs else None
+
+
+def create_customer(email: str, name: str = None) -> dict | None:
+    """Create a new Shopify customer with email + name. Returns the customer or None."""
+    first, last = "", ""
+    if name:
+        parts = name.strip().split()
+        first = parts[0]
+        last = " ".join(parts[1:]) if len(parts) > 1 else ""
+    payload = {"customer": {"email": email, "first_name": first, "last_name": last}}
+    res = requests.post(f"{BASE}/customers.json", headers=_headers(), json=payload)
+    if res.status_code in (200, 201):
+        return res.json().get("customer")
+    print(f"[create_customer] failed {res.status_code}: {res.text[:200]}")
+    return None
+
+
+def collect_contact_email(email: str, name: str = None) -> dict:
+    """Link the email to a Shopify customer (contact): find the existing customer,
+    or create a new one (which needs the customer's name). The session save happens
+    in app.run_loop using the returned customer_id/email/name."""
+    email = (email or "").strip().lower()
+    if not email or "@" not in email:
+        return {"saved": False, "message": "כתובת מייל לא תקינה."}
+
+    existing = find_customer_by_email(email)
+    if existing:
+        full = " ".join(x for x in [existing.get("first_name"), existing.get("last_name")] if x).strip()
+        return {
+            "saved": True, "existing": True,
+            "customer_id": str(existing.get("id")) if existing.get("id") else None,
+            "email": existing.get("email") or email,
+            "name": full or name,
+            "message": "איש הקשר נמצא ונשמר — נוכל לחזור ללקוח במייל.",
+        }
+
+    # No existing customer — we must create one, which requires a name.
+    if not name or not name.strip():
+        return {
+            "saved": False, "need_name": True,
+            "message": "כדי לשמור איש קשר חדש צריך גם את השם המלא של הלקוח. בקש את שמו ואז קרא לכלי שוב עם השם.",
+        }
+
+    created = create_customer(email, name)
+    if created:
+        return {
+            "saved": True, "existing": False,
+            "customer_id": str(created.get("id")) if created.get("id") else None,
+            "email": email, "name": name.strip(),
+            "message": "איש קשר חדש נוצר ונשמר — נוכל לחזור ללקוח במייל.",
+        }
+    return {"saved": False, "message": "לא הצלחתי לשמור את איש הקשר כרגע."}
+
+
 # ─────────────────────────────────────────────
 # Tool schemas (google-genai format)
 # ─────────────────────────────────────────────
@@ -282,6 +357,18 @@ TOOLS = [
                 required=["reason", "summary"]
             )
         ),
+        types.FunctionDeclaration(
+            name="collect_contact_email",
+            description="Save the customer's own email address so the Grinta team can follow up by email later. Call this whenever the customer provides their email — including when they give it to check an order, or when you ask for it before escalating. Never call it with an email that is not the customer's own (e.g. an address quoted from somewhere else).",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "email": types.Schema(type=types.Type.STRING, description="The customer's own email address"),
+                    "name": types.Schema(type=types.Type.STRING, description="The customer's name, if known (optional)"),
+                },
+                required=["email"]
+            )
+        ),
     ])
 ]
 
@@ -299,5 +386,7 @@ def dispatch_tool(name: str, args: dict) -> dict:
         return add_order_note(**args)
     elif name == "escalate_to_human":
         return escalate_to_human(**args)
+    elif name == "collect_contact_email":
+        return collect_contact_email(**args)
     else:
         return {"error": f"Unknown tool: {name}"}
