@@ -700,11 +700,19 @@ async def email_inbound(req: Request, token: str = ""):
     # the body (the From is shopify's mailer). Use the parsed customer instead,
     # so each customer becomes their own thread and replies go to them.
     form = parse_contact_form(body)
+    shopify_cid = None
     if form:
         from_email = form["email"]
         from_name  = form["name"]
         subject    = "פנייה מטופס יצירת קשר"
         content    = form["content"]
+        # Form submissions always link to a Shopify contact (find or create).
+        try:
+            contact = tools.collect_contact_email(from_email, from_name)
+            if contact.get("saved"):
+                shopify_cid = contact.get("customer_id")
+        except Exception as e:
+            print(f"[form contact] error: {e}")
     else:
         content = body
 
@@ -712,7 +720,10 @@ async def email_inbound(req: Request, token: str = ""):
 
     session_id = f"email-{from_email}"
     db.ensure_session(session_id)
-    db.set_email_meta(session_id, from_email, subject, from_name)
+    # Form submits are a website-origin channel ('form'); direct mail is 'email'.
+    db.set_email_meta(session_id, from_email, subject, from_name,
+                      channel=("form" if form else "email"),
+                      shopify_customer_id=shopify_cid)
     db.add_message(session_id, "user", stored)
     db.set_status(session_id, "escalated", "פנייה במייל")
     return {"ok": True}
@@ -786,13 +797,18 @@ def admin_reply(req: ReplyRequest, _: bool = Depends(check_admin)):
 
     via  = (req.via or "widget").lower()
     sess = db.get_session(req.session_id) or {}
+    channel = (sess.get("channel") or "").lower()
     email = (sess.get("customer_email") or "").strip()
     if not email and req.session_id.startswith("email-"):
         email = req.session_id[len("email-"):].strip()
 
+    # A pure email channel has no widget — always deliver by mail.
+    # (Future IG/WhatsApp channels will get their own delivery here.)
+    force_mail = channel == "email"
+
     # "Reply by mail" sends the email AND keeps the widget copy above.
     # "Reply in widget" stores only (no mail), even if an email exists.
-    if via == "mail" and email:
+    if (via == "mail" or force_mail) and email:
         msgs = db.get_messages(req.session_id)
         last_user = next((m["content"] for m in reversed(msgs) if m["role"] == "user"), "")
         quote = _clean_quote(last_user)
@@ -1037,6 +1053,8 @@ ADMIN_HTML = """
         var chan = '';
         if (s.channel === 'email') {
           chan = '<span class="badge" style="background:#e7f6e7;color:#1a7a3a;margin-left:4px">📧 מייל</span>';
+        } else if (s.channel === 'form') {
+          chan = '<span class="badge" style="background:#eef4ff;color:#2456b8;margin-left:4px">📝 טופס</span>';
         } else if (s.customer_email) {
           chan = '<span class="badge" style="background:#e7f6e7;color:#1a7a3a;margin-left:4px">💬+📧</span>';
         }
@@ -1147,7 +1165,12 @@ ADMIN_HTML = """
     const toggle = document.getElementById('mailToggle');
     const label = document.getElementById('mailToggleLabel');
     if(!wrap || !toggle) return;
-    if(!current){ wrap.style.display='none'; return; }
+    const s = sessionsData.find(x=>x.session_id===current);
+    const channel = (s && s.channel) ? s.channel : '';
+    // The mail toggle is only meaningful where a widget exists (website origin):
+    // web chat + contact-form. Direct email / IG / WhatsApp deliver one way only.
+    const isWidgetType = (channel === '' || channel === 'web' || channel === 'form');
+    if(!current || !isWidgetType){ wrap.style.display='none'; return; }
     const e = currentEmail();
     wrap.style.display='flex';
     if(e){
