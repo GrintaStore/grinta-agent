@@ -220,3 +220,56 @@ def set_contact_email(session_id: str, customer_email: str, customer_name: str =
         json=payload,
         timeout=20,
     )
+
+
+# ─────────────────────────────────────────────
+# IP blocking (widget only)
+# ─────────────────────────────────────────────
+
+def set_last_ip(session_id: str, ip: str) -> None:
+    """Store the visitor's most recent IP on the session (so it can be blocked)."""
+    if not ip:
+        return
+    url = f"{_REST}/sessions?session_id=eq.{session_id}"
+    requests.patch(
+        url,
+        headers=_headers({"Prefer": "return=minimal"}),
+        json={"last_ip": ip},
+        timeout=20,
+    )
+
+
+def is_ip_blocked(ip: str) -> bool:
+    if not ip:
+        return False
+    url = f"{_REST}/blocklist_ip?ip=eq.{ip}&select=ip"
+    res = requests.get(url, headers=_headers(), timeout=20)
+    return bool(res.json()) if res.status_code == 200 else False
+
+
+def block_ip(ip: str, reason: str = None) -> None:
+    if not ip:
+        return
+    url = f"{_REST}/blocklist_ip"
+    payload = {"ip": ip}
+    if reason:
+        payload["reason"] = reason
+    requests.post(
+        url,
+        headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
+        json=payload,
+        timeout=20,
+    )
+
+
+def unblock_ip(ip: str) -> None:
+    if not ip:
+        return
+    url = f"{_REST}/blocklist_ip?ip=eq.{ip}"
+    requests.delete(url, headers=_headers({"Prefer": "return=minimal"}), timeout=20)
+
+
+def list_blocked_ips() -> list:
+    url = f"{_REST}/blocklist_ip?order=created_at.desc"
+    res = requests.get(url, headers=_headers(), timeout=20)
+    return res.json() if res.status_code == 200 else []
