@@ -34,17 +34,17 @@ client = genai.Client(api_key=_get_gemini_key())
 
 # Models are tried in order: if one fails (e.g. 503 overloaded), fall to the next
 MODELS = [
-    "gemini-2.5-flash",
-    "gemini-3-flash-preview",
     "gemini-2.5-flash-lite",
     "gemini-3.1-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-3-flash-preview",
 ]
 
 # Stronger models used for email draft generation (better answers + tool use).
 # The fast/cheap "lite" models stay for live chat; email drafts get these.
 GENERATE_MODELS = [
-    "gemini-2.5-flash",
     "gemini-3-flash-preview",
+    "gemini-2.5-flash",
 ]
 
 # ─────────────────────────────────────────────
@@ -519,9 +519,25 @@ def _is_stale(updated_at_str: str, hours: int = 1) -> bool:
         return False
 
 
+def _client_ip(request: Request) -> str:
+    """Real visitor IP. On Render the app is behind a proxy, so prefer
+    X-Forwarded-For (first hop) over the direct socket address."""
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else ""
+
+
 @app.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest):
+def chat(req: ChatRequest, request: Request):
+    # Silent IP block (widget only): blocked visitors get no reply, no model call.
+    ip = _client_ip(request)
+    if ip and db.is_ip_blocked(ip):
+        return ChatResponse(reply="", session_id=req.session_id)
+
     db.ensure_session(req.session_id)
+    if ip:
+        db.set_last_ip(req.session_id, ip)
 
     # Read status + last activity BEFORE the new message resets the timer
     session_before = db.get_session(req.session_id)
@@ -909,6 +925,42 @@ def admin_takeover(req: ReplyRequest, _: bool = Depends(check_admin)):
     return {"ok": True}
 
 
+class IpRequest(BaseModel):
+    ip: str
+
+
+@app.get("/admin/api/session_meta")
+def admin_session_meta(session_id: str, _: bool = Depends(check_admin)):
+    sess = db.get_session(session_id) or {}
+    ip = (sess.get("last_ip") or "").strip()
+    return {
+        "channel": sess.get("channel") or "",
+        "last_ip": ip,
+        "ip_blocked": db.is_ip_blocked(ip) if ip else False,
+    }
+
+
+@app.post("/admin/api/block_ip")
+def admin_block_ip(req: ReplyRequest, _: bool = Depends(check_admin)):
+    sess = db.get_session(req.session_id) or {}
+    ip = (sess.get("last_ip") or "").strip()
+    if not ip:
+        return {"ok": False, "error": "no ip on session"}
+    db.block_ip(ip, req.content or None)
+    return {"ok": True, "ip": ip}
+
+
+@app.post("/admin/api/unblock_ip")
+def admin_unblock_ip(req: IpRequest, _: bool = Depends(check_admin)):
+    db.unblock_ip(req.ip)
+    return {"ok": True}
+
+
+@app.get("/admin/api/blocklist")
+def admin_blocklist(_: bool = Depends(check_admin)):
+    return {"ips": db.list_blocked_ips()}
+
+
 @app.get("/admin", response_class=HTMLResponse)
 def admin_page(_: bool = Depends(check_admin)):
     return ADMIN_HTML
@@ -970,6 +1022,7 @@ ADMIN_HTML = """
     <div class="filter">
       <button id="f-esc" class="active" onclick="setFilter(true)">דורש טיפול</button>
       <button id="f-all" onclick="setFilter(false)">הכל</button>
+      <button id="f-blocked" onclick="showBlocklist()" title="רשימת חסומים" style="flex:0 0 auto;padding:8px 11px;border:1px solid #e2b4b4;background:#fff5f5;color:#b00;border-radius:8px;cursor:pointer;">🚫</button>
     </div>
     <div class="filter rangefilter">
       <button id="r-7" class="active" onclick="setRange(7)">7 ימים</button>
@@ -985,6 +1038,7 @@ ADMIN_HTML = """
     <div id="sessions"></div>
   </div>
   <div class="conv">
+    <div id="ipbar" style="display:none;padding:6px 14px;background:#fff;border-bottom:1px solid #eee;font-size:12px;color:#555;justify-content:space-between;align-items:center;"></div>
     <div id="pagebar" style="display:none;padding:8px 14px;background:#fff;border-bottom:1px solid #eee;font-size:13px;color:#555;"></div>
     <div class="msgs" id="msgs"><div class="empty">בחר שיחה מהרשימה</div></div>
     <div class="composer">
@@ -1003,6 +1057,7 @@ ADMIN_HTML = """
   let onlyEsc = true;
   let current = null;
   let sessionsData = [];
+  let viewingBlocklist = false;
   let rangeDays = 7;       // 7 / 30 / 90, or null when a custom range is active
   let customFrom = '';
   let customTo = '';
@@ -1095,15 +1150,83 @@ ADMIN_HTML = """
   }
 
   function openConv(id){
+    viewingBlocklist = false;
+    var comp = document.querySelector('.composer');
+    if(comp) comp.style.display = '';
     current = id;
     loadSessions();
     loadMsgs();
     updateToggle();
     updatePageBar();
     updateDelivery();
+    loadSessionMeta(id);
+  }
+
+  function loadSessionMeta(id){
+    fetch('/admin/api/session_meta?session_id=' + encodeURIComponent(id))
+      .then(r=>r.json()).then(renderIpBar).catch(()=>{});
+  }
+
+  function renderIpBar(meta){
+    const bar = document.getElementById('ipbar');
+    if(!bar) return;
+    const ch = meta.channel || '';
+    const isWidget = (ch === '' || ch === 'web' || ch === 'form');
+    if(!isWidget || !meta.last_ip){ bar.style.display='none'; return; }
+    bar.style.display='flex';
+    if(meta.ip_blocked){
+      bar.innerHTML = '<span style="color:#b00">🚫 IP חסום: ' + meta.last_ip + '</span>'
+        + '<button onclick="unblockIp(\'' + meta.last_ip + '\')" style="font-size:12px;background:#143a14;color:#9ad29a;border:1px solid #1d5a1d;border-radius:7px;padding:4px 10px;cursor:pointer">↩︎ בטל חסימה</button>';
+    } else {
+      bar.innerHTML = '<span>IP: ' + meta.last_ip + '</span>'
+        + '<button onclick="blockIp()" style="font-size:12px;background:#3a1414;color:#ff8a8a;border:1px solid #5a1d1d;border-radius:7px;padding:4px 10px;cursor:pointer">🚫 חסום IP</button>';
+    }
+  }
+
+  function blockIp(){
+    if(!current) return;
+    fetch('/admin/api/block_ip', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({session_id: current, content: ''})})
+      .then(()=>loadSessionMeta(current));
+  }
+
+  function unblockIp(ip){
+    fetch('/admin/api/unblock_ip', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ip: ip})})
+      .then(()=>{ if(viewingBlocklist) showBlocklist(); else if(current) loadSessionMeta(current); });
+  }
+
+  function showBlocklist(){
+    viewingBlocklist = true;
+    current = null;
+    document.getElementById('ipbar').style.display='none';
+    document.getElementById('pagebar').style.display='none';
+    var comp = document.querySelector('.composer');
+    if(comp) comp.style.display='none';
+    fetch('/admin/api/blocklist').then(r=>r.json()).then(d=>{
+      const box = document.getElementById('msgs');
+      const ips = d.ips || [];
+      let html = '<div style="background:#fff5f5;color:#b00;padding:10px 14px;font-weight:700;border-radius:8px;margin-bottom:8px;">🚫 כתובות IP חסומות (' + ips.length + ')</div>';
+      if(!ips.length){ html += '<div class="empty">אין כתובות חסומות</div>'; }
+      ips.forEach(b=>{
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:11px 12px;border-bottom:1px solid #f3f3f3;">'
+          + '<div><div style="font-family:monospace;font-size:13px">' + b.ip + '</div>'
+          + '<div style="font-size:11px;color:#999;margin-top:2px">נחסם ' + fmtDate(b.created_at) + (b.reason ? ' · ' + escapeHtml(b.reason) : '') + '</div></div>'
+          + '<button onclick="unblockIp(\'' + b.ip + '\')" style="font-size:12px;background:#143a14;color:#9ad29a;border:1px solid #1d5a1d;border-radius:7px;padding:5px 10px;cursor:pointer">בטל</button>'
+          + '</div>';
+      });
+      box.innerHTML = html;
+    });
+  }
+
+  function fmtDate(ts){
+    if(!ts) return '';
+    try { return new Date(ts).toLocaleDateString('he-IL',{day:'numeric',month:'numeric',timeZone:'Asia/Jerusalem'}); }
+    catch(e){ return ''; }
   }
 
   function loadMsgs(){
+    if(viewingBlocklist) return;
     if(!current) return;
     fetch('/admin/api/messages?session_id=' + encodeURIComponent(current))
       .then(r=>r.json()).then(d=>{
