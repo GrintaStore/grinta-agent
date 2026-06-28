@@ -858,7 +858,8 @@ ADMIN_HTML = """
   .sess .preview { font-size:13px; color:#666; margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .conv { flex:1; display:flex; flex-direction:column; }
   .msgs { flex:1; overflow-y:auto; padding:18px; display:flex; flex-direction:column; gap:10px; }
-  .m { max-width:70%; padding:10px 14px; border-radius:14px; font-size:14px; line-height:1.5; white-space:pre-wrap; }
+  .m { max-width:70%; min-width:0; padding:10px 14px; border-radius:14px; font-size:14px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }
+  .m img { max-width:100%; height:auto; }
   .m.user { align-self:flex-start; background:#fff; border:1px solid #e2e2e2; }
   .m.assistant { align-self:flex-end; background:var(--black); color:#fff; }
   .m.human { align-self:flex-end; background:var(--gold); color:#0a0a0a; }
