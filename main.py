@@ -569,6 +569,48 @@ def fetch_inbound_email(email_id: str) -> dict:
     return {}
 
 
+def parse_contact_form(body: str) -> dict | None:
+    """Detect a Shopify contact-form notification and pull the real customer
+    out of the body. Returns {name, email, content} or None if not a form.
+
+    The Shopify form body looks like:
+        ...
+        Name:
+        Somsak Rirerm
+        אימייל:
+        somsak500011@gmail.com
+        תוכן:
+        שלום, איפה החבילה שלי עכשיו?
+    Labels may be Hebrew or English, value on the same or the next line.
+    """
+    text = body or ""
+    # email — value right after an email label (allow value on the next line)
+    em = re.search(
+        r'(?:אימייל|מייל|דוא"?ל|דואל|e-?mail|email)\s*:\s*([^\s@]+@[^\s@]+\.[^\s@]+)',
+        text, re.IGNORECASE,
+    )
+    # content — everything after a content label to the end
+    cm = re.search(
+        r'(?:^|\n)\s*(?:תוכן|הודעה|message|body|comment)\s*:\s*(.*)$',
+        text, re.IGNORECASE | re.DOTALL,
+    )
+    if not (em and cm):
+        return None  # not a recognizable contact-form email
+
+    email   = em.group(1).strip().lower()
+    content = cm.group(1).strip()
+    if not content:
+        return None
+
+    nm = re.search(r'(?:^|\n)\s*(?:name|שם|שם מלא)\s*:\s*(.+)', text, re.IGNORECASE)
+    name = nm.group(1).strip() if nm else ""
+    name = re.sub(r"[\u200e\u200f\u202a-\u202e]", "", name).strip()
+    if "@" in name:
+        name = ""
+
+    return {"name": name, "email": email, "content": content}
+
+
 @app.post("/email/inbound")
 async def email_inbound(req: Request, token: str = ""):
     # simple shared-secret check (token is in the webhook URL)
@@ -597,7 +639,20 @@ async def email_inbound(req: Request, token: str = ""):
 
     subject = (full.get("subject") or data.get("subject") or "").strip() or "(ללא נושא)"
     body    = (full.get("text") or full.get("html") or "").strip()
-    stored  = f"נושא: {subject}\n\n{body}"
+
+    # If this is a Shopify contact-form submission, the real customer is INSIDE
+    # the body (the From is shopify's mailer). Use the parsed customer instead,
+    # so each customer becomes their own thread and replies go to them.
+    form = parse_contact_form(body)
+    if form:
+        from_email = form["email"]
+        from_name  = form["name"]
+        subject    = "פנייה מטופס יצירת קשר"
+        content    = form["content"]
+    else:
+        content = body
+
+    stored = f"נושא: {subject}\n\n{content}"
 
     session_id = f"email-{from_email}"
     db.ensure_session(session_id)
@@ -696,14 +751,21 @@ def admin_generate(req: ReplyRequest, _: bool = Depends(check_admin)):
         return {"draft": ""}
 
     sess = db.get_session(req.session_id) or {}
-    is_email = sess.get("channel") == "email"
+    # Detect email sessions robustly: the channel flag OR the session-id prefix
+    # (email sessions are always keyed "email-{address}"). This survives cases
+    # where channel/customer_email weren't stored.
+    is_email = sess.get("channel") == "email" or req.session_id.startswith("email-")
 
     if is_email:
         name  = (sess.get("customer_name") or "").strip()
+        # fall back to the address embedded in the session id if not stored
         email = (sess.get("customer_email") or "").strip()
+        if not email and req.session_id.startswith("email-"):
+            email = req.session_id[len("email-"):].strip()
         name_line = f'- שם הפונה: {name}' if name else '- שם הפונה: לא ידוע'
         greet_hint = (f'פתח בפנייה אישית בשמו (למשל "היי {name}," או "שלום {name},").'
-                      if name else 'פתח בברכה (למשל "היי," או "שלום,").')
+                      if name else 'פתח בברכה כללית (למשל "היי," או "שלום,"). '
+                                   'לעולם אל תשתמש בכתובת מייל או במספר כשם של הלקוח.')
         instruction = (
             "זוהי פנייה במייל. כתוב טיוטת תשובת מייל מלאה ללקוח.\n\n"
             "פרטי הפונה:\n"
