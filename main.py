@@ -586,6 +586,12 @@ async def email_inbound(req: Request, token: str = ""):
     if not from_email:
         return {"ok": True}
 
+    # Display name from the From header ("מאיר כהן <meir@x.com>" -> "מאיר כהן").
+    from_name = from_raw.split("<")[0].strip().strip('"').strip() if "<" in from_raw else ""
+    from_name = re.sub(r"[\u200e\u200f\u202a-\u202e]", "", from_name).strip()
+    if "@" in from_name:  # display name is just the email -> treat as no name
+        from_name = ""
+
     email_id = data.get("email_id") or data.get("id") or ""
     full     = fetch_inbound_email(email_id) if email_id else {}
 
@@ -595,7 +601,7 @@ async def email_inbound(req: Request, token: str = ""):
 
     session_id = f"email-{from_email}"
     db.ensure_session(session_id)
-    db.set_email_meta(session_id, from_email, subject)
+    db.set_email_meta(session_id, from_email, subject, from_name)
     db.add_message(session_id, "user", stored)
     db.set_status(session_id, "escalated", "פנייה במייל")
     return {"ok": True}
@@ -688,13 +694,42 @@ def admin_generate(req: ReplyRequest, _: bool = Depends(check_admin)):
     history = build_history(req.session_id, skip_last_user=False)
     if not history:
         return {"draft": ""}
-    history.append(types.Content(
-        role="user",
-        parts=[types.Part(text=(
+
+    sess = db.get_session(req.session_id) or {}
+    is_email = sess.get("channel") == "email"
+
+    if is_email:
+        name  = (sess.get("customer_name") or "").strip()
+        email = (sess.get("customer_email") or "").strip()
+        name_line = f'- שם הפונה: {name}' if name else '- שם הפונה: לא ידוע'
+        greet_hint = (f'פתח בפנייה אישית בשמו (למשל "היי {name}," או "שלום {name},").'
+                      if name else 'פתח בברכה (למשל "היי," או "שלום,").')
+        instruction = (
+            "זוהי פנייה במייל. כתוב טיוטת תשובת מייל מלאה ללקוח.\n\n"
+            "פרטי הפונה:\n"
+            f"{name_line}\n"
+            f"- כתובת המייל של הפונה: {email}\n\n"
+            "מבנה התשובה:\n"
+            f"- {greet_hint}\n"
+            "- אחר כך כתוב את גוף התשובה.\n"
+            "- סיים בחתימה בשתי שורות: \"בברכה,\" ובשורה הבאה \"צוות גרינטה\".\n\n"
+            "בדיקת הזמנות:\n"
+            f"- כתובת המייל של הפונה ({email}) ידועה לך. השתמש בה לבדיקת הזמנות לפי מייל, "
+            "וכן בכל פרט מזהה אחר שהלקוח מוסר (מספר הזמנה, שם, וכו') כדי לאתר את ההזמנה הרלוונטית.\n"
+            "- אם נמצאו כמה הזמנות, התייחס להזמנה האחרונה לפי התאריך, אלא אם הלקוח מתייחס לאחת ספציפית.\n"
+            "- אם הלקוח מסר מספר הזמנה ולא נמצאה הזמנה תואמת — אל תבקש שוב את אותו מספר; הסבר לו שלא מצאת "
+            "הזמנה עם המספר הזה ובקש שיוודא את הפרטים.\n"
+            "- אם אין בידך שום פרט מזהה ולא נמצאה הזמנה לפי המייל — בקש מהלקוח פרט מזהה (מספר הזמנה "
+            "או הכתובת ששימשה בהזמנה).\n\n"
+            "החזר רק את נוסח תשובת המייל, ללא הקדמות או הסברים."
+        )
+    else:
+        instruction = (
             "כתוב טיוטת תשובה ללקוח על סמך השיחה עד כה. "
             "החזר רק את נוסח התשובה ללקוח, ללא הקדמות או הסברים."
-        ))]
-    ))
+        )
+
+    history.append(types.Content(role="user", parts=[types.Part(text=instruction)]))
     try:
         text, _ = run_loop(req.session_id, history)
     except Exception as e:
