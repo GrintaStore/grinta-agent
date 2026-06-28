@@ -1175,11 +1175,11 @@ ADMIN_HTML = """
     if(!isWidget || !meta.last_ip){ bar.style.display='none'; return; }
     bar.style.display='flex';
     if(meta.ip_blocked){
-      bar.innerHTML = '<span style="color:#b00">🚫 IP חסום: ' + meta.last_ip + '</span>'
-        + '<button onclick="unblockIp(\'' + meta.last_ip + '\')" style="font-size:12px;background:#143a14;color:#9ad29a;border:1px solid #1d5a1d;border-radius:7px;padding:4px 10px;cursor:pointer">↩︎ בטל חסימה</button>';
+      bar.innerHTML = "<span style=\"color:#b00\">🚫 IP חסום: " + meta.last_ip + "</span>"
+        + "<button data-ip=\"" + meta.last_ip + "\" onclick=\"unblockIp(this.dataset.ip)\" style=\"font-size:12px;background:#143a14;color:#9ad29a;border:1px solid #1d5a1d;border-radius:7px;padding:4px 10px;cursor:pointer\">↩︎ בטל חסימה</button>";
     } else {
-      bar.innerHTML = '<span>IP: ' + meta.last_ip + '</span>'
-        + '<button onclick="blockIp()" style="font-size:12px;background:#3a1414;color:#ff8a8a;border:1px solid #5a1d1d;border-radius:7px;padding:4px 10px;cursor:pointer">🚫 חסום IP</button>';
+      bar.innerHTML = "<span>IP: " + meta.last_ip + "</span>"
+        + "<button onclick=\"blockIp()\" style=\"font-size:12px;background:#3a1414;color:#ff8a8a;border:1px solid #5a1d1d;border-radius:7px;padding:4px 10px;cursor:pointer\">🚫 חסום IP</button>";
     }
   }
 
@@ -1212,7 +1212,7 @@ ADMIN_HTML = """
         html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:11px 12px;border-bottom:1px solid #f3f3f3;">'
           + '<div><div style="font-family:monospace;font-size:13px">' + b.ip + '</div>'
           + '<div style="font-size:11px;color:#999;margin-top:2px">נחסם ' + fmtDate(b.created_at) + (b.reason ? ' · ' + escapeHtml(b.reason) : '') + '</div></div>'
-          + '<button onclick="unblockIp(\'' + b.ip + '\')" style="font-size:12px;background:#143a14;color:#9ad29a;border:1px solid #1d5a1d;border-radius:7px;padding:5px 10px;cursor:pointer">בטל</button>'
+          + '<button data-ip="' + b.ip + '" onclick="unblockIp(this.dataset.ip)" style="font-size:12px;background:#143a14;color:#9ad29a;border:1px solid #1d5a1d;border-radius:7px;padding:5px 10px;cursor:pointer">בטל</button>'
           + '</div>';
       });
       box.innerHTML = html;
