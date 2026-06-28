@@ -747,8 +747,11 @@ class ReplyRequest(BaseModel):
 
 
 @app.get("/admin/api/sessions")
-def admin_sessions(only_escalated: bool = False, _: bool = Depends(check_admin)):
-    return {"sessions": db.list_sessions(only_escalated)}
+def admin_sessions(only_escalated: bool = False, days: int = 7,
+                   date_from: str = "", date_to: str = "",
+                   _: bool = Depends(check_admin)):
+    return {"sessions": db.list_sessions(only_escalated, days,
+                                         date_from or None, date_to or None)}
 
 
 @app.get("/admin/api/messages")
@@ -887,6 +890,13 @@ ADMIN_HTML = """
   .filter { padding:10px; border-bottom:1px solid #eee; display:flex; gap:8px; }
   .filter button { flex:1; padding:8px; border:1px solid #ddd; background:#fff; border-radius:8px; cursor:pointer; font-family:inherit; }
   .filter button.active { background:var(--black); color:#fff; border-color:var(--black); }
+  .rangefilter button { font-size:12px; padding:7px 0; }
+  .rangefilter button.active { background:#fff7e0 !important; color:#7a5a12 !important; border-color:var(--gold) !important; font-weight:700; }
+  .customRange { padding:10px; border-bottom:1px solid #eee; background:#fafafa; }
+  .customRange .row { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+  .customRange label { font-size:12px; color:#555; width:48px; }
+  .customRange input { flex:1; padding:6px 8px; border:1px solid #d8d8d8; border-radius:8px; font-size:12px; font-family:inherit; }
+  .customRange .apply { width:100%; padding:8px; border:none; background:var(--gold); color:#0a0a0a; border-radius:8px; font-weight:700; cursor:pointer; }
   .sess { padding:12px 14px; border-bottom:1px solid #f0f0f0; cursor:pointer; }
   .sess:hover { background:#fafafa; }
   .sess.active { background:#fff7e0; border-right:3px solid var(--gold); }
@@ -919,6 +929,17 @@ ADMIN_HTML = """
       <button id="f-esc" class="active" onclick="setFilter(true)">דורש טיפול</button>
       <button id="f-all" onclick="setFilter(false)">הכל</button>
     </div>
+    <div class="filter rangefilter">
+      <button id="r-7" class="active" onclick="setRange(7)">7 ימים</button>
+      <button id="r-30" onclick="setRange(30)">30</button>
+      <button id="r-90" onclick="setRange(90)">90</button>
+      <button id="r-custom" onclick="setRange(null)">מותאם</button>
+    </div>
+    <div class="customRange" id="customRange" style="display:none;">
+      <div class="row"><label>מתאריך</label><input type="date" id="cfrom"></div>
+      <div class="row"><label>עד תאריך</label><input type="date" id="cto"></div>
+      <button class="apply" onclick="applyCustom()">החל טווח</button>
+    </div>
     <div id="sessions"></div>
   </div>
   <div class="conv">
@@ -936,6 +957,9 @@ ADMIN_HTML = """
   let onlyEsc = true;
   let current = null;
   let sessionsData = [];
+  let rangeDays = 7;       // 7 / 30 / 90, or null when a custom range is active
+  let customFrom = '';
+  let customTo = '';
 
   function setFilter(esc){
     onlyEsc = esc;
@@ -944,8 +968,34 @@ ADMIN_HTML = """
     loadSessions();
   }
 
+  function setRange(d){
+    rangeDays = d;
+    ['7','30','90','custom'].forEach(k=>{
+      document.getElementById('r-'+k).classList.toggle('active', (k==='custom' ? d===null : String(d)===k));
+    });
+    document.getElementById('customRange').style.display = (d===null ? 'block' : 'none');
+    if(d !== null) loadSessions();   // presets apply immediately; custom waits for "החל טווח"
+  }
+
+  function applyCustom(){
+    customFrom = document.getElementById('cfrom').value;
+    customTo   = document.getElementById('cto').value;
+    loadSessions();
+  }
+
+  function sessionsUrl(){
+    let u = '/admin/api/sessions?only_escalated=' + onlyEsc;
+    if(rangeDays === null){
+      if(customFrom) u += '&date_from=' + customFrom;
+      if(customTo)   u += '&date_to=' + customTo;
+    } else {
+      u += '&days=' + rangeDays;
+    }
+    return u;
+  }
+
   function loadSessions(){
-    fetch('/admin/api/sessions?only_escalated=' + onlyEsc)
+    fetch(sessionsUrl())
       .then(r=>r.json()).then(d=>{
         sessionsData = d.sessions || [];
         const box = document.getElementById('sessions');
