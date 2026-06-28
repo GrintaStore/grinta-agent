@@ -162,16 +162,19 @@ def get_new_messages_after(session_id: str, after_id: int) -> list:
     res = requests.get(url, headers=_headers(), timeout=20)
     return res.json() if res.status_code == 200 else []
 
-def set_email_meta(session_id: str, customer_email: str, subject: str) -> None:
+def set_email_meta(session_id: str, customer_email: str, subject: str, customer_name: str = None) -> None:
     url = f"{_REST}/sessions?session_id=eq.{session_id}"
+    payload = {
+        "channel": "email",
+        "customer_email": customer_email,
+        "email_subject": subject,
+        "updated_at": "now()",
+    }
+    if customer_name:
+        payload["customer_name"] = customer_name
     requests.patch(
         url,
         headers=_headers({"Prefer": "return=minimal"}),
-        json={
-            "channel": "email",
-            "customer_email": customer_email,
-            "email_subject": subject,
-            "updated_at": "now()",
-        },
+        json=payload,
         timeout=20,
     )
