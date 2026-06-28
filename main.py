@@ -34,8 +34,6 @@ client = genai.Client(api_key=_get_gemini_key())
 
 # Models are tried in order: if one fails (e.g. 503 overloaded), fall to the next
 MODELS = [
-    "gemini-2.5-flash-lite",
-    "gemini-3.1-flash-lite",
     "gemini-2.5-flash",
     "gemini-3-flash-preview",
 ]
@@ -43,8 +41,8 @@ MODELS = [
 # Stronger models used for email draft generation (better answers + tool use).
 # The fast/cheap "lite" models stay for live chat; email drafts get these.
 GENERATE_MODELS = [
-    "gemini-3-flash-preview",
     "gemini-2.5-flash",
+    "gemini-3-flash-preview",
 ]
 
 # ─────────────────────────────────────────────
