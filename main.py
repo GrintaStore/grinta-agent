@@ -828,6 +828,16 @@ def admin_generate(req: ReplyRequest, _: bool = Depends(check_admin)):
             "החזר רק את נוסח התשובה ללקוח, ללא הקדמות או הסברים."
         )
 
+    # If the rep typed something in the reply box, use it as a direction/steer
+    # for the draft (e.g. "tell him it'll ship tomorrow", "be firm about the
+    # return policy"). The generated draft then replaces it in the box.
+    direction = (req.content or "").strip()
+    if direction:
+        instruction += (
+            "\n\nהנחיית הנציג לתשובה — כתוב את התשובה לפי ההנחיה הזו: "
+            + direction
+        )
+
     history.append(types.Content(role="user", parts=[types.Part(text=instruction)]))
     try:
         text, _ = run_loop(req.session_id, history,
@@ -916,7 +926,7 @@ ADMIN_HTML = """
     <div class="msgs" id="msgs"><div class="empty">בחר שיחה מהרשימה</div></div>
     <div class="composer">
       <textarea id="reply" placeholder="כתוב תשובה ללקוח..." rows="2"></textarea>
-        <button id="genBtn" onclick="generateDraft()" style="background:#0a0a0a;color:var(--gold)">✨ צור טיוטה</button>
+        <button id="genBtn" onclick="generateDraft()" title="אפשר לכתוב הנחיה קצרה בתיבה לפני הלחיצה — הסוכן יכתוב את הטיוטה לפיה" style="background:#0a0a0a;color:var(--gold)">✨ צור טיוטה</button>
         <button onclick="sendReply()">שלח</button>
         <button class="hb" id="toggleBtn" style="display:none">✋ קח שליטה</button>
     </div>
@@ -1042,10 +1052,11 @@ ADMIN_HTML = """
       if(!current) return;
       var btn = document.getElementById('genBtn');
       var old = btn.textContent;
+      var hint = document.getElementById('reply').value;
       btn.textContent = '...חושב';
       btn.disabled = true;
       fetch('/admin/api/generate', {method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({session_id: current, content: ''})})
+        body: JSON.stringify({session_id: current, content: hint})})
         .then(r=>r.json())
         .then(d=>{
           if(d.draft){ document.getElementById('reply').value = d.draft; }
