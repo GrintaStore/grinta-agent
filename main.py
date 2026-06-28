@@ -40,6 +40,13 @@ MODELS = [
     "gemini-3-flash-preview",
 ]
 
+# Stronger models used for email draft generation (better answers + tool use).
+# The fast/cheap "lite" models stay for live chat; email drafts get these.
+GENERATE_MODELS = [
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash",
+]
+
 # ─────────────────────────────────────────────
 # Config
 # ─────────────────────────────────────────────
@@ -396,11 +403,11 @@ def build_system_instruction(current_page: str | None = None) -> str:
     return instruction
 
 
-def gemini_generate(history, current_page: str | None = None):
+def gemini_generate(history, current_page: str | None = None, models=None):
     """Try each model in order; fall to the next if one fails (503) or returns empty content."""
     system_instruction = build_system_instruction(current_page)
     last_error = None
-    for model_name in MODELS:
+    for model_name in (models or MODELS):
         try:
             resp = client.models.generate_content(
                 model=model_name,
@@ -428,11 +435,11 @@ def gemini_generate(history, current_page: str | None = None):
     raise last_error
 
 
-def run_loop(session_id: str, history, current_page: str | None = None):
+def run_loop(session_id: str, history, current_page: str | None = None, models=None):
     """Run the tool-use loop over a prepared history. Returns (text, escalated)."""
     escalated = False
     for _ in range(5):
-        response = gemini_generate(history, current_page)
+        response = gemini_generate(history, current_page, models)
         content = response.candidates[0].content
         history.append(content)
 
@@ -793,7 +800,8 @@ def admin_generate(req: ReplyRequest, _: bool = Depends(check_admin)):
 
     history.append(types.Content(role="user", parts=[types.Part(text=instruction)]))
     try:
-        text, _ = run_loop(req.session_id, history)
+        text, _ = run_loop(req.session_id, history,
+                           models=GENERATE_MODELS if is_email else None)
     except Exception as e:
         print(f"[generate] error: {e}")
         return {"draft": "", "error": str(e)}
