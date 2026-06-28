@@ -247,19 +247,23 @@ def is_ip_blocked(ip: str) -> bool:
     return bool(res.json()) if res.status_code == 200 else False
 
 
-def block_ip(ip: str, reason: str = None) -> None:
+def block_ip(ip: str, reason: str = None) -> bool:
     if not ip:
-        return
+        return False
     url = f"{_REST}/blocklist_ip"
     payload = {"ip": ip}
     if reason:
         payload["reason"] = reason
-    requests.post(
+    res = requests.post(
         url,
         headers=_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
         json=payload,
         timeout=20,
     )
+    if res.status_code in (200, 201, 204):
+        return True
+    print(f"[block_ip] failed {res.status_code}: {res.text[:200]}")
+    return False
 
 
 def unblock_ip(ip: str) -> None:
