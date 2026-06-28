@@ -11,6 +11,7 @@ import os
 import json
 import time
 import requests
+from datetime import datetime, timezone, timedelta
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
@@ -101,10 +102,28 @@ def set_last_page(session_id: str, url_value: str) -> None:
     )
 
 
-def list_sessions(only_escalated: bool = False) -> list:
-    url = f"{_REST}/session_overview?order=updated_at.desc&limit=100"
+def list_sessions(only_escalated: bool = False, days: int = 7,
+                  date_from: str = None, date_to: str = None) -> list:
+    """List sessions for the admin inbox, filtered by last-activity date.
+
+    - days: only sessions updated within the last N days (default 7).
+    - date_from / date_to: an explicit custom range (YYYY-MM-DD). When given,
+      these take precedence over `days`. date_to is inclusive of the whole day.
+    """
+    url = f"{_REST}/session_overview?order=updated_at.desc&limit=200"
     if only_escalated:
         url += "&status=eq.escalated"
+
+    if date_from or date_to:
+        # Custom range takes precedence over the day presets.
+        if date_from:
+            url += f"&updated_at=gte.{date_from}T00:00:00Z"
+        if date_to:
+            url += f"&updated_at=lte.{date_to}T23:59:59Z"
+    elif days and days > 0:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        url += f"&updated_at=gte.{cutoff}"
+
     res = requests.get(url, headers=_headers(), timeout=20)
     return res.json() if res.status_code == 200 else []
 
