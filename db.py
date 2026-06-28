@@ -197,3 +197,23 @@ def set_email_meta(session_id: str, customer_email: str, subject: str, customer_
         json=payload,
         timeout=20,
     )
+
+
+def set_contact_email(session_id: str, customer_email: str, customer_name: str = None,
+                      shopify_customer_id: str = None) -> None:
+    """Save a contact email/name/Shopify-customer-id onto a session WITHOUT changing
+    its channel. Used to capture a web visitor's email so the team can reply by mail."""
+    if not customer_email:
+        return
+    url = f"{_REST}/sessions?session_id=eq.{session_id}"
+    payload = {"customer_email": customer_email}
+    if customer_name:
+        payload["customer_name"] = customer_name
+    if shopify_customer_id:
+        payload["shopify_customer_id"] = shopify_customer_id
+    requests.patch(
+        url,
+        headers=_headers({"Prefer": "return=minimal"}),
+        json=payload,
+        timeout=20,
+    )
