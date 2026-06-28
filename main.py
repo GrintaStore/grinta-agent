@@ -972,8 +972,7 @@ ADMIN_HTML = """
     <div id="pagebar" style="display:none;padding:8px 14px;background:#fff;border-bottom:1px solid #eee;font-size:13px;color:#555;"></div>
     <div class="msgs" id="msgs"><div class="empty">בחר שיחה מהרשימה</div></div>
     <div class="composer">
-      <div id="deliveryBar" style="width:100%;font-size:12px;padding:4px 6px;display:none;"></div>
-      <label id="mailToggleWrap" style="width:100%;display:none;align-items:center;gap:7px;font-size:12px;padding:2px 6px 4px;cursor:pointer;">
+      <label id="mailToggleWrap" style="width:100%;display:none;justify-content:flex-end;align-items:center;gap:7px;font-size:12px;padding:2px 6px 4px;cursor:pointer;">
         <input type="checkbox" id="mailToggle" style="width:15px;height:15px;cursor:pointer;">
         <span id="mailToggleLabel"></span>
       </label>
@@ -1147,26 +1146,20 @@ ADMIN_HTML = """
     const wrap = document.getElementById('mailToggleWrap');
     const toggle = document.getElementById('mailToggle');
     const label = document.getElementById('mailToggleLabel');
-    const bar = document.getElementById('deliveryBar');
-    if(!wrap || !toggle || !bar) return;
-    if(!current){ wrap.style.display='none'; bar.style.display='none'; return; }
+    if(!wrap || !toggle) return;
+    if(!current){ wrap.style.display='none'; return; }
     const e = currentEmail();
     wrap.style.display='flex';
-    bar.style.display='block';
     if(e){
       toggle.disabled=false;
       toggle.checked=true;
       wrap.style.opacity='1';
       label.textContent = "📧 שלח גם למייל: " + e;
-      bar.style.color='#1a7a3a';
-      bar.textContent = "תשובה במייל תופיע גם בוידג'ט. ללא סימון — תוצג בוידג'ט בלבד.";
     } else {
       toggle.checked=false;
       toggle.disabled=true;
       wrap.style.opacity='.5';
       label.textContent = "📧 שלח גם למייל (אין מייל שמור)";
-      bar.style.color='#999';
-      bar.textContent = "💬 אין מייל שמור — התשובה תוצג בוידג'ט בלבד.";
     }
   }
 
