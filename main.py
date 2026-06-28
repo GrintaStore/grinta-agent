@@ -325,6 +325,12 @@ Escalate when:
 - You truly don't have the information to help
 - The request is unusual and outside everything in your knowledge
 
+Before you escalate: if you do NOT already have the customer's email address, ask for it first (and their name, if you don't have it) so the team can reply by email — unless the customer already gave these earlier in the conversation (e.g. when checking an order). Once you have the email, call collect_contact_email to save it, then escalate. If you already have the email, just escalate.
+
+## Contact email
+- Whenever the customer provides their own email address — for ANY reason, including to check an order — call collect_contact_email to save them as a contact, so the team can follow up by email later. Pass their name too if you know it. Do this naturally in the background; no need to announce it.
+- Saving a NEW contact requires a name. If collect_contact_email replies that a name is needed (need_name), ask the customer for their full name, then call collect_contact_email again with both the email and the name. (If the customer already exists in our system, the name isn't required.)
+
 ## Image handling
 - If a customer sends an image of a jersey, assess if there is visible damage or defect
 - If there is a clear defect, apologize and escalate to human
@@ -455,12 +461,25 @@ def run_loop(session_id: str, history, current_page: str | None = None, models=N
             fc   = part.function_call
             name = fc.name
             args = dict(fc.args)
+            print(f"[Tool call] {name}({args})")
+            result = dispatch_tool(name, args)
+
+            # Side effects that depend on the session / result:
             if name == "escalate_to_human":
                 escalated = True
                 db.set_status(session_id, "escalated", args.get("reason", ""))
                 notify_escalation(session_id, args.get("reason", ""), args.get("summary", ""))
-            print(f"[Tool call] {name}({args})")
-            result = dispatch_tool(name, args)
+            elif name == "collect_contact_email" and isinstance(result, dict) and result.get("saved"):
+                db.set_contact_email(session_id, result.get("email", ""),
+                                     result.get("name"), result.get("customer_id"))
+            elif name == "get_order_by_email" and isinstance(result, dict):
+                # An email used for an order lookup belongs to an existing customer —
+                # link the contact automatically (no separate tool call needed).
+                cust = result.get("customer") or {}
+                em = cust.get("email") or args.get("email")
+                if em:
+                    db.set_contact_email(session_id, em, cust.get("name"), cust.get("id"))
+
             tool_response_parts.append(types.Part(
                 function_response=types.FunctionResponse(
                     name=name, response={"result": result}
@@ -744,6 +763,7 @@ def check_admin(creds: HTTPBasicCredentials = Depends(security)):
 class ReplyRequest(BaseModel):
     session_id: str
     content: str
+    via: str = "widget"
 
 
 @app.get("/admin/api/sessions")
@@ -761,24 +781,30 @@ def admin_messages(session_id: str, _: bool = Depends(check_admin)):
 
 @app.post("/admin/api/reply")
 def admin_reply(req: ReplyRequest, _: bool = Depends(check_admin)):
+    # Always store the human reply — it shows in the widget when the visitor returns.
     db.add_message(req.session_id, "human", req.content)
 
-    # If this is an email conversation, actually email the reply to the customer.
-    sess = db.get_session(req.session_id)
-    if sess and sess.get("channel") == "email" and sess.get("customer_email"):
-        # Quote the customer's most recent message (cleaned) for context.
+    via  = (req.via or "widget").lower()
+    sess = db.get_session(req.session_id) or {}
+    email = (sess.get("customer_email") or "").strip()
+    if not email and req.session_id.startswith("email-"):
+        email = req.session_id[len("email-"):].strip()
+
+    # "Reply by mail" sends the email AND keeps the widget copy above.
+    # "Reply in widget" stores only (no mail), even if an email exists.
+    if via == "mail" and email:
         msgs = db.get_messages(req.session_id)
         last_user = next((m["content"] for m in reversed(msgs) if m["role"] == "user"), "")
         quote = _clean_quote(last_user)
         ok = send_customer_email(
-            sess["customer_email"],
+            email,
             sess.get("email_subject") or "פנייתך ל-Grinta",
             req.content,
             quote=quote,
         )
         return {"ok": True, "emailed": ok}
 
-    return {"ok": True}
+    return {"ok": True, "emailed": False}
 
 
 @app.post("/admin/api/generate")
@@ -946,9 +972,11 @@ ADMIN_HTML = """
     <div id="pagebar" style="display:none;padding:8px 14px;background:#fff;border-bottom:1px solid #eee;font-size:13px;color:#555;"></div>
     <div class="msgs" id="msgs"><div class="empty">בחר שיחה מהרשימה</div></div>
     <div class="composer">
+      <div id="deliveryBar" style="width:100%;font-size:12px;padding:4px 6px;display:none;"></div>
       <textarea id="reply" placeholder="כתוב תשובה ללקוח..." rows="2"></textarea>
         <button id="genBtn" onclick="generateDraft()" title="אפשר לכתוב הנחיה קצרה בתיבה לפני הלחיצה — הסוכן יכתוב את הטיוטה לפיה" style="background:#0a0a0a;color:var(--gold)">✨ צור טיוטה</button>
-        <button onclick="sendReply()">שלח</button>
+        <button id="sendWidgetBtn" onclick="sendReply('widget')">💬 וידג'ט</button>
+        <button id="sendMailBtn" onclick="sendReply('mail')" title="שולח במייל ומציג גם בוידג'ט">📧 מייל</button>
         <button class="hb" id="toggleBtn" style="display:none">✋ קח שליטה</button>
     </div>
   </div>
@@ -1004,9 +1032,12 @@ ADMIN_HTML = """
           const div = document.createElement('div');
           div.className = 'sess' + (s.session_id===current ? ' active':'');
           div.onclick = ()=>openConv(s.session_id);
-        var chan = s.channel==='email'
-          ? '<span class="badge" style="background:#e7f6e7;color:#1a7a3a;margin-left:4px">📧 מייל</span>'
-          : '';
+        var chan = '';
+        if (s.channel === 'email') {
+          chan = '<span class="badge" style="background:#e7f6e7;color:#1a7a3a;margin-left:4px">📧 מייל</span>';
+        } else if (s.customer_email) {
+          chan = '<span class="badge" style="background:#e7f6e7;color:#1a7a3a;margin-left:4px">💬+📧</span>';
+        }
         div.innerHTML =
           '<div class="top"><span>'+chan+'<span class="badge '+s.status+'">'+s.status+'</span></span>'+
           '<span style="font-size:11px;color:#aaa">'+fmtTime(s.updated_at)+'</span></div>'+
@@ -1015,6 +1046,7 @@ ADMIN_HTML = """
         });
         updateToggle();
         updatePageBar();
+        updateDelivery();
       });
   }
 
@@ -1048,6 +1080,7 @@ ADMIN_HTML = """
     loadMsgs();
     updateToggle();
     updatePageBar();
+    updateDelivery();
   }
 
   function loadMsgs(){
@@ -1083,19 +1116,44 @@ ADMIN_HTML = """
       });
   }
 
-  function sendReply(){
+  function sendReply(via){
     const inp = document.getElementById('reply');
     const text = inp.value.trim();
     if(!text || !current) return;
     inp.value='';
     fetch('/admin/api/reply', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({session_id: current, content: text})})
+      body: JSON.stringify({session_id: current, content: text, via: via||'widget'})})
       .then(r=>r.json())
       .then(d=>{
-        if(d.emailed === false){ alert('נשמר, אך שליחת המייל ללקוח נכשלה — בדוק את הלוגים'); }
+        if(via==='mail' && d.emailed === false){ alert('נשמר, אך שליחת המייל ללקוח נכשלה — בדוק את הלוגים'); }
         loadMsgs();
       })
       .catch(()=>{ alert('שגיאה בשליחה'); loadMsgs(); });
+  }
+
+  function currentEmail(){
+    const s = sessionsData.find(x=>x.session_id===current);
+    let e = (s && s.customer_email) ? s.customer_email : '';
+    if(!e && current && current.indexOf('email-')===0){ e = current.substring(6); }
+    return e;
+  }
+
+  function updateDelivery(){
+    const mailBtn = document.getElementById('sendMailBtn');
+    const bar = document.getElementById('deliveryBar');
+    if(!mailBtn || !bar) return;
+    if(!current){ bar.style.display='none'; mailBtn.disabled=true; mailBtn.style.opacity='.45'; return; }
+    const e = currentEmail();
+    bar.style.display='block';
+    if(e){
+      mailBtn.disabled=false; mailBtn.style.opacity='1';
+      bar.style.color='#1a7a3a';
+      bar.textContent = '📧 ניתן להשיב במייל: ' + e + '  (תשובה במייל תופיע גם בוידג\'ט)';
+    } else {
+      mailBtn.disabled=true; mailBtn.style.opacity='.45';
+      bar.style.color='#999';
+      bar.textContent = '💬 אין מייל שמור — התשובה תוצג בוידג\'ט בלבד';
+    }
   }
 
     function generateDraft(){
