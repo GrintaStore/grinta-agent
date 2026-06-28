@@ -973,10 +973,13 @@ ADMIN_HTML = """
     <div class="msgs" id="msgs"><div class="empty">בחר שיחה מהרשימה</div></div>
     <div class="composer">
       <div id="deliveryBar" style="width:100%;font-size:12px;padding:4px 6px;display:none;"></div>
+      <label id="mailToggleWrap" style="width:100%;display:none;align-items:center;gap:7px;font-size:12px;padding:2px 6px 4px;cursor:pointer;">
+        <input type="checkbox" id="mailToggle" style="width:15px;height:15px;cursor:pointer;">
+        <span id="mailToggleLabel"></span>
+      </label>
       <textarea id="reply" placeholder="כתוב תשובה ללקוח..." rows="2"></textarea>
         <button id="genBtn" onclick="generateDraft()" title="אפשר לכתוב הנחיה קצרה בתיבה לפני הלחיצה — הסוכן יכתוב את הטיוטה לפיה" style="background:#0a0a0a;color:var(--gold)">✨ צור טיוטה</button>
-        <button id="sendWidgetBtn" onclick="sendReply('widget')">💬 וידג'ט</button>
-        <button id="sendMailBtn" onclick="sendReply('mail')" title="שולח במייל ומציג גם בוידג'ט">📧 מייל</button>
+        <button id="sendBtn" onclick="sendReply()">שלח</button>
         <button class="hb" id="toggleBtn" style="display:none">✋ קח שליטה</button>
     </div>
   </div>
@@ -1116,13 +1119,15 @@ ADMIN_HTML = """
       });
   }
 
-  function sendReply(via){
+  function sendReply(){
     const inp = document.getElementById('reply');
     const text = inp.value.trim();
     if(!text || !current) return;
+    const toggle = document.getElementById('mailToggle');
+    const via = (toggle && !toggle.disabled && toggle.checked) ? 'mail' : 'widget';
     inp.value='';
     fetch('/admin/api/reply', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({session_id: current, content: text, via: via||'widget'})})
+      body: JSON.stringify({session_id: current, content: text, via: via})})
       .then(r=>r.json())
       .then(d=>{
         if(via==='mail' && d.emailed === false){ alert('נשמר, אך שליחת המייל ללקוח נכשלה — בדוק את הלוגים'); }
@@ -1139,20 +1144,29 @@ ADMIN_HTML = """
   }
 
   function updateDelivery(){
-    const mailBtn = document.getElementById('sendMailBtn');
+    const wrap = document.getElementById('mailToggleWrap');
+    const toggle = document.getElementById('mailToggle');
+    const label = document.getElementById('mailToggleLabel');
     const bar = document.getElementById('deliveryBar');
-    if(!mailBtn || !bar) return;
-    if(!current){ bar.style.display='none'; mailBtn.disabled=true; mailBtn.style.opacity='.45'; return; }
+    if(!wrap || !toggle || !bar) return;
+    if(!current){ wrap.style.display='none'; bar.style.display='none'; return; }
     const e = currentEmail();
+    wrap.style.display='flex';
     bar.style.display='block';
     if(e){
-      mailBtn.disabled=false; mailBtn.style.opacity='1';
+      toggle.disabled=false;
+      toggle.checked=true;
+      wrap.style.opacity='1';
+      label.textContent = "📧 שלח גם למייל: " + e;
       bar.style.color='#1a7a3a';
-      bar.textContent = '📧 ניתן להשיב במייל: ' + e + '  (תשובה במייל תופיע גם בוידג\'ט)';
+      bar.textContent = "תשובה במייל תופיע גם בוידג'ט. ללא סימון — תוצג בוידג'ט בלבד.";
     } else {
-      mailBtn.disabled=true; mailBtn.style.opacity='.45';
+      toggle.checked=false;
+      toggle.disabled=true;
+      wrap.style.opacity='.5';
+      label.textContent = "📧 שלח גם למייל (אין מייל שמור)";
       bar.style.color='#999';
-      bar.textContent = '💬 אין מייל שמור — התשובה תוצג בוידג\'ט בלבד';
+      bar.textContent = "💬 אין מייל שמור — התשובה תוצג בוידג'ט בלבד.";
     }
   }
 
