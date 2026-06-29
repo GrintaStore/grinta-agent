@@ -803,7 +803,9 @@ def admin_sessions(only_escalated: bool = False, days: int = 7,
 
 @app.get("/admin/api/messages")
 def admin_messages(session_id: str, _: bool = Depends(check_admin)):
-    return {"messages": db.get_messages(session_id)}
+    msgs = db.get_messages(session_id)
+    db.mark_read(session_id)
+    return {"messages": msgs}
 
 
 @app.post("/admin/api/reply")
@@ -946,13 +948,19 @@ def admin_block_ip(req: ReplyRequest, _: bool = Depends(check_admin)):
     ip = (sess.get("last_ip") or "").strip()
     if not ip:
         return {"ok": False, "error": "no ip on session"}
-    db.block_ip(ip, req.content or None)
-    return {"ok": True, "ip": ip}
+    ok = db.block_ip(ip, req.content or None)
+    return {"ok": ok, "ip": ip, "error": None if ok else "db write failed"}
 
 
 @app.post("/admin/api/unblock_ip")
 def admin_unblock_ip(req: IpRequest, _: bool = Depends(check_admin)):
     db.unblock_ip(req.ip)
+    return {"ok": True}
+
+
+@app.post("/admin/api/mark_unread")
+def admin_mark_unread(req: ReplyRequest, _: bool = Depends(check_admin)):
+    db.mark_unread(req.session_id)
     return {"ok": True}
 
 
@@ -1038,6 +1046,9 @@ ADMIN_HTML = """
     <div id="sessions"></div>
   </div>
   <div class="conv">
+    <div id="convhead" style="display:none;padding:6px 14px;background:#fff;border-bottom:1px solid #eee;justify-content:flex-start;align-items:center;">
+      <button onclick="markUnread()" style="font-size:12px;background:#fff;border:1px solid #ddd;border-radius:7px;padding:4px 10px;cursor:pointer;color:#555;">✉️ סמן כלא נקרא</button>
+    </div>
     <div id="ipbar" style="display:none;padding:6px 14px;background:#fff;border-bottom:1px solid #eee;font-size:12px;color:#555;justify-content:space-between;align-items:center;"></div>
     <div id="pagebar" style="display:none;padding:8px 14px;background:#fff;border-bottom:1px solid #eee;font-size:13px;color:#555;"></div>
     <div class="msgs" id="msgs"><div class="empty">בחר שיחה מהרשימה</div></div>
@@ -1113,10 +1124,12 @@ ADMIN_HTML = """
         } else if (s.customer_email) {
           chan = '<span class="badge" style="background:#e7f6e7;color:#1a7a3a;margin-left:4px">💬+📧</span>';
         }
+        var dot = s.unread ? '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#2563eb;margin-left:6px;vertical-align:middle;"></span>' : '';
+        var pvStyle = s.unread ? 'font-weight:700;color:#111;' : '';
         div.innerHTML =
-          '<div class="top"><span>'+chan+'<span class="badge '+s.status+'">'+s.status+'</span></span>'+
+          '<div class="top"><span>'+dot+chan+'<span class="badge '+s.status+'">'+s.status+'</span></span>'+
           '<span style="font-size:11px;color:#aaa">'+fmtTime(s.updated_at)+'</span></div>'+
-          '<div class="preview">'+(s.customer_email ? s.customer_email+' — ' : '')+(s.last_message||'')+'</div>';
+          '<div class="preview" style="'+pvStyle+'">'+(s.customer_email ? s.customer_email+' — ' : '')+(s.last_message||'')+'</div>';
           box.appendChild(div);
         });
         updateToggle();
@@ -1153,6 +1166,7 @@ ADMIN_HTML = """
     viewingBlocklist = false;
     var comp = document.querySelector('.composer');
     if(comp) comp.style.display = '';
+    document.getElementById('convhead').style.display = 'flex';
     current = id;
     loadSessions();
     loadMsgs();
@@ -1187,7 +1201,12 @@ ADMIN_HTML = """
     if(!current) return;
     fetch('/admin/api/block_ip', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({session_id: current, content: ''})})
-      .then(()=>loadSessionMeta(current));
+      .then(r=>r.json())
+      .then(d=>{
+        if(!d.ok){ alert('החסימה נכשלה' + (d.error ? ': ' + d.error : '')); }
+        loadSessionMeta(current);
+      })
+      .catch(()=>alert('שגיאה בחסימה'));
   }
 
   function unblockIp(ip){
@@ -1196,9 +1215,26 @@ ADMIN_HTML = """
       .then(()=>{ if(viewingBlocklist) showBlocklist(); else if(current) loadSessionMeta(current); });
   }
 
+  function markUnread(){
+    if(!current) return;
+    var id = current;
+    fetch('/admin/api/mark_unread', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({session_id: id, content: ''})})
+      .then(()=>{
+        current = null;
+        document.getElementById('convhead').style.display='none';
+        document.getElementById('ipbar').style.display='none';
+        document.getElementById('pagebar').style.display='none';
+        document.getElementById('msgs').innerHTML = '<div class="empty">בחר שיחה מהרשימה</div>';
+        loadSessions();
+      })
+      .catch(()=>alert('שגיאה'));
+  }
+
   function showBlocklist(){
     viewingBlocklist = true;
     current = null;
+    document.getElementById('convhead').style.display='none';
     document.getElementById('ipbar').style.display='none';
     document.getElementById('pagebar').style.display='none';
     var comp = document.querySelector('.composer');
