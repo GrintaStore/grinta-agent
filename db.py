@@ -12,6 +12,7 @@ import json
 import time
 import requests
 from datetime import datetime, timezone, timedelta
+from urllib.parse import quote
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
@@ -103,12 +104,15 @@ def set_last_page(session_id: str, url_value: str) -> None:
 
 
 def list_sessions(only_escalated: bool = False, days: int = 7,
-                  date_from: str = None, date_to: str = None) -> list:
+                  date_from: str = None, date_to: str = None,
+                  search: str = None) -> list:
     """List sessions for the admin inbox, filtered by last-activity date.
 
     - days: only sessions updated within the last N days (default 7).
     - date_from / date_to: an explicit custom range (YYYY-MM-DD). When given,
       these take precedence over `days`. date_to is inclusive of the whole day.
+    - search: keyword; keeps only sessions whose email/name matches OR that have
+      a message containing the keyword. Composes with the date/status filters.
     """
     url = f"{_REST}/session_overview?order=updated_at.desc&limit=200"
     if only_escalated:
@@ -135,6 +139,35 @@ def list_sessions(only_escalated: bool = False, days: int = 7,
             r["unread"] = r.get("session_id") in unread_ids
     except Exception as e:
         print(f"[unread merge] {e}")
+
+    # Keyword search: narrows the already-filtered rows by email/name/message text.
+    if search and search.strip():
+        kw = search.strip()
+        kwl = kw.lower()
+        snippet = {}
+        try:
+            mres = requests.get(
+                f"{_REST}/messages?content=ilike.*{quote(kw)}*&select=session_id,content&limit=500",
+                headers=_headers(), timeout=20,
+            )
+            if mres.status_code == 200:
+                for m in mres.json():
+                    sid = m.get("session_id")
+                    if sid and sid not in snippet:
+                        snippet[sid] = m.get("content", "")
+        except Exception as e:
+            print(f"[search messages] {e}")
+        filtered = []
+        for r in rows:
+            sid = r.get("session_id")
+            email = (r.get("customer_email") or "").lower()
+            name = (r.get("customer_name") or "").lower()
+            if sid in snippet or kwl in email or kwl in name:
+                if sid in snippet:
+                    r["match_snippet"] = snippet[sid]
+                filtered.append(r)
+        rows = filtered
+
     return rows
 
 
