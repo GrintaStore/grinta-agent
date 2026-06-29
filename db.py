@@ -125,12 +125,35 @@ def list_sessions(only_escalated: bool = False, days: int = 7,
         url += f"&updated_at=gte.{cutoff}"
 
     res = requests.get(url, headers=_headers(), timeout=20)
-    return res.json() if res.status_code == 200 else []
+    rows = res.json() if res.status_code == 200 else []
+    # Merge the unread flag from the sessions table (avoids recreating the view).
+    try:
+        ur = requests.get(f"{_REST}/sessions?unread=eq.true&select=session_id",
+                          headers=_headers(), timeout=20)
+        unread_ids = {r["session_id"] for r in ur.json()} if ur.status_code == 200 else set()
+        for r in rows:
+            r["unread"] = r.get("session_id") in unread_ids
+    except Exception as e:
+        print(f"[unread merge] {e}")
+    return rows
 
 
-# ─────────────────────────────────────────────
-# Messages
-# ─────────────────────────────────────────────
+def mark_read(session_id: str) -> None:
+    requests.patch(
+        f"{_REST}/sessions?session_id=eq.{session_id}",
+        headers=_headers({"Prefer": "return=minimal"}),
+        json={"unread": False},
+        timeout=20,
+    )
+
+
+def mark_unread(session_id: str) -> None:
+    requests.patch(
+        f"{_REST}/sessions?session_id=eq.{session_id}",
+        headers=_headers({"Prefer": "return=minimal"}),
+        json={"unread": True},
+        timeout=20,
+    )
 
 def add_message(session_id: str, role: str, content: str, image_data: str = None) -> dict | None:
     """role is one of: user, assistant, human. image_data is an optional image URL."""
@@ -144,7 +167,16 @@ def add_message(session_id: str, role: str, content: str, image_data: str = None
         json=payload,
         timeout=20,
     )
-    touch_session(session_id)
+    # Bump activity; a new CUSTOMER message also marks the thread unread.
+    meta = {"updated_at": "now()"}
+    if role == "user":
+        meta["unread"] = True
+    requests.patch(
+        f"{_REST}/sessions?session_id=eq.{session_id}",
+        headers=_headers({"Prefer": "return=minimal"}),
+        json=meta,
+        timeout=20,
+    )
     rows = res.json() if res.status_code in (200, 201) else []
     return rows[0] if rows else None
 
