@@ -1054,10 +1054,10 @@ ADMIN_HTML = """
     <div id="sessions"></div>
   </div>
   <div class="conv">
-    <div id="convhead" style="display:none;padding:6px 14px;background:#fff;border-bottom:1px solid #eee;justify-content:flex-start;align-items:center;">
-      <button onclick="markUnread()" style="font-size:12px;background:#fff;border:1px solid #ddd;border-radius:7px;padding:4px 10px;cursor:pointer;color:#555;">✉️ סמן כלא נקרא</button>
+    <div id="convhead" style="display:none;padding:6px 14px;background:#fff;border-bottom:1px solid #eee;justify-content:space-between;align-items:center;gap:10px;">
+      <span id="ipbar" style="font-size:12px;color:#555;display:flex;align-items:center;gap:8px;"></span>
+      <button onclick="markUnread()" style="font-size:12px;background:#fff;border:1px solid #ddd;border-radius:7px;padding:4px 10px;cursor:pointer;color:#555;white-space:nowrap;">✉️ סמן כלא נקרא</button>
     </div>
-    <div id="ipbar" style="display:none;padding:6px 14px;background:#fff;border-bottom:1px solid #eee;font-size:12px;color:#555;justify-content:space-between;align-items:center;"></div>
     <div id="pagebar" style="display:none;padding:8px 14px;background:#fff;border-bottom:1px solid #eee;font-size:13px;color:#555;"></div>
     <div class="msgs" id="msgs"><div class="empty">בחר שיחה מהרשימה</div></div>
     <div class="composer">
@@ -1253,8 +1253,7 @@ ADMIN_HTML = """
     if(!bar) return;
     const ch = meta.channel || '';
     const isWidget = (ch === '' || ch === 'web' || ch === 'form');
-    if(!isWidget || !meta.last_ip){ bar.style.display='none'; return; }
-    bar.style.display='flex';
+    if(!isWidget || !meta.last_ip){ bar.innerHTML = ''; return; }
     if(meta.ip_blocked){
       bar.innerHTML = '<span style="color:#b00">🚫 IP חסום: ' + meta.last_ip + '</span>'
         + '<button data-ip="' + meta.last_ip + '" onclick="unblockIp(this.dataset.ip)" style="font-size:12px;background:#143a14;color:#9ad29a;border:1px solid #1d5a1d;border-radius:7px;padding:4px 10px;cursor:pointer">↩︎ בטל חסימה</button>';
@@ -1290,7 +1289,6 @@ ADMIN_HTML = """
       .then(()=>{
         current = null;
         document.getElementById('convhead').style.display='none';
-        document.getElementById('ipbar').style.display='none';
         document.getElementById('pagebar').style.display='none';
         document.getElementById('msgs').innerHTML = '<div class="empty">בחר שיחה מהרשימה</div>';
         loadSessions();
@@ -1302,7 +1300,6 @@ ADMIN_HTML = """
     viewingBlocklist = true;
     current = null;
     document.getElementById('convhead').style.display='none';
-    document.getElementById('ipbar').style.display='none';
     document.getElementById('pagebar').style.display='none';
     var comp = document.querySelector('.composer');
     if(comp) comp.style.display='none';
