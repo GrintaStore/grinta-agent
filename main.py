@@ -795,10 +795,11 @@ class ReplyRequest(BaseModel):
 
 @app.get("/admin/api/sessions")
 def admin_sessions(only_escalated: bool = False, days: int = 7,
-                   date_from: str = "", date_to: str = "",
+                   date_from: str = "", date_to: str = "", search: str = "",
                    _: bool = Depends(check_admin)):
     return {"sessions": db.list_sessions(only_escalated, days,
-                                         date_from or None, date_to or None)}
+                                         date_from or None, date_to or None,
+                                         search or None)}
 
 
 @app.get("/admin/api/messages")
@@ -1027,6 +1028,13 @@ ADMIN_HTML = """
 <header>Grinta — <b>תיבת פניות</b></header>
 <div class="wrap">
   <div class="list">
+    <div style="padding:9px;border-bottom:1px solid #eee;">
+      <div style="display:flex;align-items:center;gap:8px;border:1px solid #ddd;border-radius:8px;padding:6px 10px;background:#fafafa;">
+        <span style="color:#999;font-size:14px;">🔍</span>
+        <input id="searchBox" oninput="onSearchInput()" placeholder="חפש לפי מייל, שם או תוכן הודעה…" style="flex:1;border:none;background:transparent;outline:none;font-size:13px;font-family:inherit;">
+        <span id="searchClear" onclick="clearSearch()" style="display:none;cursor:pointer;color:#999;font-size:14px;">✕</span>
+      </div>
+    </div>
     <div class="filter">
       <button id="f-esc" class="active" onclick="setFilter(true)">דורש טיפול</button>
       <button id="f-all" onclick="setFilter(false)">הכל</button>
@@ -1095,6 +1103,46 @@ ADMIN_HTML = """
     loadSessions();
   }
 
+  let searchQuery = '';
+  let searchTimer = null;
+
+  function onSearchInput(){
+    searchQuery = document.getElementById('searchBox').value;
+    document.getElementById('searchClear').style.display = searchQuery ? 'inline' : 'none';
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(loadSessions, 300);
+  }
+
+  function clearSearch(){
+    searchQuery = '';
+    document.getElementById('searchBox').value = '';
+    document.getElementById('searchClear').style.display = 'none';
+    loadSessions();
+  }
+
+  function searchHighlight(text, q){
+    var t = text || '';
+    if(!q) return escapeHtml(t);
+    var i = t.toLowerCase().indexOf(q.toLowerCase());
+    if(i < 0) return escapeHtml(t);
+    return escapeHtml(t.slice(0,i))
+      + '<mark style="background:#fff3bf;color:#5c4400;padding:0 2px;border-radius:2px;">'
+      + escapeHtml(t.slice(i, i+q.length)) + '</mark>'
+      + escapeHtml(t.slice(i+q.length));
+  }
+
+  function searchSnippet(text, q){
+    var t = text || '';
+    if(t.indexOf('נושא:') === 0){
+      var nl = t.indexOf(String.fromCharCode(10));
+      if(nl >= 0) t = t.slice(nl+1).replace(/^[ \t]+/, '');
+    }
+    var i = t.toLowerCase().indexOf((q||'').toLowerCase());
+    if(i < 0) return t.slice(0, 90);
+    var start = Math.max(0, i - 30);
+    return (start > 0 ? '…' : '') + t.slice(start, i + q.length + 50) + '…';
+  }
+
   function sessionsUrl(){
     let u = '/admin/api/sessions?only_escalated=' + onlyEsc;
     if(rangeDays === null){
@@ -1102,6 +1150,9 @@ ADMIN_HTML = """
       if(customTo)   u += '&date_to=' + customTo;
     } else {
       u += '&days=' + rangeDays;
+    }
+    if(searchQuery && searchQuery.trim()){
+      u += '&search=' + encodeURIComponent(searchQuery.trim());
     }
     return u;
   }
@@ -1112,6 +1163,13 @@ ADMIN_HTML = """
         sessionsData = d.sessions || [];
         const box = document.getElementById('sessions');
         box.innerHTML = '';
+        var sq = searchQuery && searchQuery.trim() ? searchQuery.trim() : '';
+        if(sq){
+          const cnt = document.createElement('div');
+          cnt.style.cssText = 'padding:6px 12px;font-size:11px;color:#888;border-bottom:1px solid #f0f0f0;';
+          cnt.textContent = sessionsData.length + ' שיחות נמצאו';
+          box.appendChild(cnt);
+        }
         sessionsData.forEach(s=>{
           const div = document.createElement('div');
           div.className = 'sess' + (s.session_id===current ? ' active':'');
@@ -1126,10 +1184,19 @@ ADMIN_HTML = """
         }
         var dot = s.unread ? '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#2563eb;margin-left:6px;vertical-align:middle;"></span>' : '';
         var pvStyle = s.unread ? 'font-weight:700;color:#111;' : '';
+        var previewHtml;
+        if(sq && s.match_snippet){
+          previewHtml = searchHighlight(searchSnippet(s.match_snippet, sq), sq);
+        } else if(sq){
+          var emailPart = s.customer_email ? searchHighlight(s.customer_email, sq) + ' — ' : '';
+          previewHtml = emailPart + escapeHtml(s.last_message || '');
+        } else {
+          previewHtml = (s.customer_email ? s.customer_email + ' — ' : '') + (s.last_message || '');
+        }
         div.innerHTML =
           '<div class="top"><span>'+dot+chan+'<span class="badge '+s.status+'">'+s.status+'</span></span>'+
           '<span style="font-size:11px;color:#aaa">'+fmtTime(s.updated_at)+'</span></div>'+
-          '<div class="preview" style="'+pvStyle+'">'+(s.customer_email ? s.customer_email+' — ' : '')+(s.last_message||'')+'</div>';
+          '<div class="preview" style="'+pvStyle+'">'+previewHtml+'</div>';
           box.appendChild(div);
         });
         updateToggle();
