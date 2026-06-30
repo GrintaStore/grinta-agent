@@ -1,5 +1,6 @@
 import json
 import time
+import re
 import requests
 from google.genai import types
 
@@ -273,7 +274,7 @@ def collect_contact_email(email: str, name: str = None) -> dict:
     or create a new one (which needs the customer's name). The session save happens
     in app.run_loop using the returned customer_id/email/name."""
     email = (email or "").strip().lower()
-    if not email or "@" not in email:
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
         return {"saved": False, "message": "כתובת מייל לא תקינה."}
 
     existing = find_customer_by_email(email)
