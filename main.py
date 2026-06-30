@@ -1065,7 +1065,7 @@ ADMIN_HTML = """
         <input type="checkbox" id="mailToggle" style="width:15px;height:15px;cursor:pointer;">
         <span id="mailToggleLabel"></span>
       </label>
-      <textarea id="reply" placeholder="כתוב תשובה ללקוח..." rows="2"></textarea>
+      <textarea id="reply" placeholder="כתוב תשובה ללקוח..." rows="2" oninput="autoGrow(this)" style="max-height:170px;overflow-y:auto;"></textarea>
         <button id="genBtn" onclick="generateDraft()" title="אפשר לכתוב הנחיה קצרה בתיבה לפני הלחיצה — הסוכן יכתוב את הטיוטה לפיה" style="background:#0a0a0a;color:var(--gold)">✨ צור טיוטה</button>
         <button id="sendBtn" onclick="sendReply()">שלח</button>
         <button class="hb" id="toggleBtn" style="display:none">✋ קח שליטה</button>
@@ -1359,6 +1359,16 @@ ADMIN_HTML = """
       });
   }
 
+  function autoGrow(el){
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 170) + 'px';
+  }
+
+  function resetReply(){
+    var el = document.getElementById('reply');
+    if(el){ el.style.height = ''; }
+  }
+
   function sendReply(){
     const inp = document.getElementById('reply');
     const text = inp.value.trim();
@@ -1366,6 +1376,7 @@ ADMIN_HTML = """
     const toggle = document.getElementById('mailToggle');
     const via = (toggle && !toggle.disabled && toggle.checked) ? 'mail' : 'widget';
     inp.value='';
+    resetReply();
     fetch('/admin/api/reply', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({session_id: current, content: text, via: via})})
       .then(r=>r.json())
@@ -1420,7 +1431,7 @@ ADMIN_HTML = """
         body: JSON.stringify({session_id: current, content: hint})})
         .then(r=>r.json())
         .then(d=>{
-          if(d.draft){ document.getElementById('reply').value = d.draft; }
+          if(d.draft){ document.getElementById('reply').value = d.draft; autoGrow(document.getElementById('reply')); }
           else { alert('לא הצלחתי לייצר טיוטה' + (d.error ? ': '+d.error : '')); }
         })
         .catch(()=>alert('שגיאה בחיבור'))
