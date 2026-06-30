@@ -10,6 +10,7 @@ Requires two env vars (set on Render):
 import os
 import json
 import time
+import re
 import requests
 from datetime import datetime, timezone, timedelta
 from urllib.parse import quote
@@ -267,18 +268,29 @@ def set_email_meta(session_id: str, customer_email: str, subject: str, customer_
     )
 
 
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _looks_like_email(value: str) -> bool:
+    return bool(value and _EMAIL_RE.match(value.strip()))
+
+
 def set_contact_email(session_id: str, customer_email: str, customer_name: str = None,
                       shopify_customer_id: str = None) -> None:
     """Save a contact email/name/Shopify-customer-id onto a session WITHOUT changing
-    its channel. Used to capture a web visitor's email so the team can reply by mail."""
-    if not customer_email:
-        return
-    url = f"{_REST}/sessions?session_id=eq.{session_id}"
-    payload = {"customer_email": customer_email}
+    its channel. Used to capture a web visitor's email so the team can reply by mail.
+    The email is only stored if it actually looks like an email — a product handle,
+    name, or any other junk passed by mistake is ignored (never saved as the email)."""
+    payload = {}
+    if _looks_like_email(customer_email):
+        payload["customer_email"] = customer_email.strip()
     if customer_name:
         payload["customer_name"] = customer_name
     if shopify_customer_id:
         payload["shopify_customer_id"] = shopify_customer_id
+    if not payload:
+        return
+    url = f"{_REST}/sessions?session_id=eq.{session_id}"
     requests.patch(
         url,
         headers=_headers({"Prefer": "return=minimal"}),
