@@ -1351,7 +1351,7 @@ ADMIN_HTML = """
           let html = '<div class="who">'+who+'</div>';
           if (m.content) html += escapeHtml(m.content);
           if (m.image_data) html += '<br><img src="'+m.image_data+'" style="max-width:200px;border-radius:8px;margin-top:6px">';
-          if (m.created_at) html += '<div style="font-size:10px;opacity:.55;margin-top:4px;text-align:left">'+fmtTime(m.created_at)+'</div>';
+          if (m.created_at) html += '<div style="font-size:10px;opacity:.55;margin-top:4px;text-align:left">'+dateTime(m.created_at)+'</div>';
           div.innerHTML = html;
           box.appendChild(div);
         });
@@ -1469,6 +1469,15 @@ ADMIN_HTML = """
     if(k===today) return 'היום';
     if(k===yest) return 'אתמול';
     return new Date(ts).toLocaleDateString('he-IL',{day:'numeric',month:'numeric',year:'numeric',timeZone:'Asia/Jerusalem'});
+  }
+  function dateTime(ts){
+    if(!ts) return '';
+    var lbl = dateLabel(ts);
+    if(lbl === 'היום' || lbl === 'אתמול') return lbl + ' ' + fmtTime(ts);
+    try {
+      var d = new Date(ts).toLocaleDateString('he-IL',{day:'2-digit',month:'2-digit',timeZone:'Asia/Jerusalem'});
+      return d + ' ' + fmtTime(ts);
+    } catch(e){ return fmtTime(ts); }
   }
 
   loadSessions();
