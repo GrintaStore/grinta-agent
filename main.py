@@ -1375,7 +1375,7 @@ ADMIN_HTML = """
           let html = '<div class="who">'+who+'</div>';
           if (m.content) html += escapeHtml(m.content);
           if (m.image_data) html += '<br><img src="'+m.image_data+'" style="max-width:200px;border-radius:8px;margin-top:6px">';
-          if (m.created_at) html += '<div style="font-size:10px;opacity:.55;margin-top:4px;text-align:left">'+dateTime(m.created_at)+'</div>';
+          if (m.created_at) html += '<div style="font-size:10px;opacity:.55;margin-top:4px;text-align:left">'+fmtTime(m.created_at)+'</div>';
           div.innerHTML = html;
           box.appendChild(div);
         });
