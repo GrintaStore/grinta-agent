@@ -357,7 +357,7 @@ def list_blocked_ips() -> list:
 
 
 # ─────────────────────────────────────────────
-# Delete a whole conversation (admin only)
+# Clear a conversation's content (admin only)
 # ─────────────────────────────────────────────
 
 def delete_session_images(session_id: str) -> None:
@@ -394,23 +394,30 @@ def delete_session_images(session_id: str) -> None:
         print(f"[delete images] error: {e}")
 
 
-def delete_session(session_id: str) -> bool:
-    """Permanently delete a conversation: images, all messages, session row.
-    Returns True if the session row was deleted."""
+def clear_session(session_id: str) -> bool:
+    """Clear a conversation's content but KEEP the session row (and its contact
+    email / name / channel / metadata). Deletes images + all messages, and marks
+    the thread read. The row stays visible in the admin panel; the user sees an
+    empty widget on next open/refresh. Returns True on success.
+
+    Note: status and updated_at are left untouched, so the session stays exactly
+    where it was in the list — just with no messages."""
     if not session_id:
         return False
     delete_session_images(session_id)
-    requests.delete(
+    res = requests.delete(
         f"{_REST}/messages?session_id=eq.{session_id}",
         headers=_headers({"Prefer": "return=minimal"}),
         timeout=20,
     )
-    res = requests.delete(
+    # Nothing left to read.
+    requests.patch(
         f"{_REST}/sessions?session_id=eq.{session_id}",
         headers=_headers({"Prefer": "return=minimal"}),
+        json={"unread": False},
         timeout=20,
     )
     ok = res.status_code in (200, 204)
     if not ok:
-        print(f"[delete session] failed {res.status_code}: {res.text[:200]}")
+        print(f"[clear session] failed {res.status_code}: {res.text[:200]}")
     return ok
