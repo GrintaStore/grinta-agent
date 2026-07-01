@@ -965,9 +965,9 @@ def admin_mark_unread(req: ReplyRequest, _: bool = Depends(check_admin)):
     return {"ok": True}
 
 
-@app.post("/admin/api/delete_session")
-def admin_delete_session(req: ReplyRequest, _: bool = Depends(check_admin)):
-    ok = db.delete_session(req.session_id)
+@app.post("/admin/api/clear_session")
+def admin_clear_session(req: ReplyRequest, _: bool = Depends(check_admin)):
+    ok = db.clear_session(req.session_id)
     return {"ok": ok}
 
 
@@ -1064,7 +1064,7 @@ ADMIN_HTML = """
       <span id="ipbar" style="font-size:12px;color:#555;display:flex;align-items:center;gap:8px;"></span>
       <span style="display:flex;gap:8px;">
         <button onclick="markUnread()" style="font-size:12px;background:#fff;border:1px solid #ddd;border-radius:7px;padding:4px 10px;cursor:pointer;color:#555;white-space:nowrap;">✉️ סמן כלא נקרא</button>
-        <button onclick="deleteSession()" style="font-size:12px;background:#fff5f5;border:1px solid #e2b4b4;border-radius:7px;padding:4px 10px;cursor:pointer;color:#b00;white-space:nowrap;">🗑️ מחק שיחה</button>
+        <button onclick="clearSession()" style="font-size:12px;background:#fff5f5;border:1px solid #e2b4b4;border-radius:7px;padding:4px 10px;cursor:pointer;color:#b00;white-space:nowrap;">🧹 נקה שיחה</button>
       </span>
     </div>
     <div id="pagebar" style="display:none;padding:8px 14px;background:#fff;border-bottom:1px solid #eee;font-size:13px;color:#555;"></div>
@@ -1305,22 +1305,19 @@ ADMIN_HTML = """
       .catch(()=>alert('שגיאה'));
   }
 
-  function deleteSession(){
+  function clearSession(){
     if(!current) return;
-    if(!confirm('למחוק את השיחה לצמיתות? כל ההודעות והתמונות יימחקו — לא ניתן לבטל.')) return;
+    if(!confirm('לנקות את תוכן השיחה? כל ההודעות והתמונות יימחקו — פרטי הפונה יישארו, והשיחה תישאר בפאנל.')) return;
     var id = current;
-    fetch('/admin/api/delete_session', {method:'POST', headers:{'Content-Type':'application/json'},
+    fetch('/admin/api/clear_session', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({session_id: id, content: ''})})
       .then(r=>r.json())
       .then(d=>{
-        if(!d.ok){ alert('המחיקה נכשלה — בדוק את הלוגים'); return; }
-        current = null;
-        document.getElementById('convhead').style.display='none';
-        document.getElementById('pagebar').style.display='none';
-        document.getElementById('msgs').innerHTML = '<div class="empty">בחר שיחה מהרשימה</div>';
-        loadSessions();
+        if(!d.ok){ alert('הניקוי נכשל — בדוק את הלוגים'); return; }
+        loadMsgs();      // conversation stays open, now empty
+        loadSessions();  // row stays in the list; preview clears
       })
-      .catch(()=>alert('שגיאה במחיקה'));
+      .catch(()=>alert('שגיאה בניקוי'));
   }
 
   function showBlocklist(){
