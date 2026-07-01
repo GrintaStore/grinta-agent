@@ -354,3 +354,63 @@ def list_blocked_ips() -> list:
     url = f"{_REST}/blocklist_ip?order=created_at.desc"
     res = requests.get(url, headers=_headers(), timeout=20)
     return res.json() if res.status_code == 200 else []
+
+
+# ─────────────────────────────────────────────
+# Delete a whole conversation (admin only)
+# ─────────────────────────────────────────────
+
+def delete_session_images(session_id: str) -> None:
+    """Delete all images under {session_id}/ in the chat-images bucket."""
+    if not session_id:
+        return
+    try:
+        res = requests.post(
+            f"{SUPABASE_URL}/storage/v1/object/list/chat-images",
+            headers=_headers(),
+            json={"prefix": session_id, "limit": 1000},
+            timeout=20,
+        )
+        if res.status_code != 200:
+            print(f"[delete images] list failed {res.status_code}: {res.text[:200]}")
+            return
+        paths = []
+        for it in (res.json() or []):
+            nm = it.get("name")
+            if not nm or nm == ".emptyFolderPlaceholder":
+                continue
+            paths.append(nm if nm.startswith(session_id + "/") else f"{session_id}/{nm}")
+        if not paths:
+            return
+        dres = requests.delete(
+            f"{SUPABASE_URL}/storage/v1/object/chat-images",
+            headers=_headers(),
+            json={"prefixes": paths},
+            timeout=30,
+        )
+        if dres.status_code not in (200, 204):
+            print(f"[delete images] delete failed {dres.status_code}: {dres.text[:200]}")
+    except Exception as e:
+        print(f"[delete images] error: {e}")
+
+
+def delete_session(session_id: str) -> bool:
+    """Permanently delete a conversation: images, all messages, session row.
+    Returns True if the session row was deleted."""
+    if not session_id:
+        return False
+    delete_session_images(session_id)
+    requests.delete(
+        f"{_REST}/messages?session_id=eq.{session_id}",
+        headers=_headers({"Prefer": "return=minimal"}),
+        timeout=20,
+    )
+    res = requests.delete(
+        f"{_REST}/sessions?session_id=eq.{session_id}",
+        headers=_headers({"Prefer": "return=minimal"}),
+        timeout=20,
+    )
+    ok = res.status_code in (200, 204)
+    if not ok:
+        print(f"[delete session] failed {res.status_code}: {res.text[:200]}")
+    return ok
