@@ -1195,7 +1195,7 @@ ADMIN_HTML = """
         }
         div.innerHTML =
           '<div class="top"><span>'+dot+chan+'<span class="badge '+s.status+'">'+s.status+'</span></span>'+
-          '<span style="font-size:11px;color:#aaa">'+fmtTime(s.updated_at)+'</span></div>'+
+          '<span style="font-size:11px;color:#aaa">'+dateTime(s.updated_at)+'</span></div>'+
           '<div class="preview" style="'+pvStyle+'">'+previewHtml+'</div>';
           box.appendChild(div);
         });
