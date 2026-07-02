@@ -7,6 +7,8 @@ import time
 import tools
 import requests
 import re
+import hmac
+import hashlib
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
@@ -56,6 +58,11 @@ ADMIN_URL         = os.environ.get("ADMIN_URL", "https://grinta-agent.onrender.c
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 EMAIL_FROM     = os.environ.get("EMAIL_FROM", "Grinta <contact@grinta.co.il>")
 RESEND_WEBHOOK_TOKEN = os.environ.get("RESEND_WEBHOOK_TOKEN", "")
+
+# Zernio (Instagram + WhatsApp inbox). API key + webhook signing secret.
+ZERNIO_API_KEY       = os.environ.get("ZERNIO_API_KEY", "")
+ZERNIO_WEBHOOK_SECRET = os.environ.get("ZERNIO_WEBHOOK_SECRET", "")
+ZERNIO_API_BASE      = "https://zernio.com/api/v1"
 
 # ─────────────────────────────────────────────
 # Email notification
@@ -279,6 +286,70 @@ def notify_escalation(session_id: str, reason: str, summary: str) -> None:
         f"לטיפול בפנייה: {ADMIN_URL}\n"
     )
     threading.Thread(target=_send_email, args=(subject, body), daemon=True).start()
+
+# ─────────────────────────────────────────────
+# Zernio (Instagram + WhatsApp)
+# ─────────────────────────────────────────────
+# Map a Zernio platform value to our internal channel name. Only these two are
+# wired for now; other platforms are ignored on inbound.
+ZERNIO_PLATFORMS = {"instagram": "instagram", "whatsapp": "whatsapp"}
+
+# In-memory de-dup of webhook event ids. Deliveries are at-least-once, so the
+# same message can arrive twice; we skip ids we've already handled. Best-effort:
+# resets on restart / isn't shared across workers, which is fine at this volume.
+_zernio_seen_events: set[str] = set()
+
+
+def _zernio_already_seen(event_id: str) -> bool:
+    if not event_id:
+        return False
+    if event_id in _zernio_seen_events:
+        return True
+    _zernio_seen_events.add(event_id)
+    if len(_zernio_seen_events) > 2000:
+        _zernio_seen_events.clear()
+    return False
+
+
+def _zernio_verify(raw_body: bytes, signature: str) -> bool:
+    """Verify the X-Zernio-Signature header: lowercase hex HMAC-SHA256 of the raw
+    body keyed by the webhook secret. If no secret is configured, allow (dev)."""
+    if not ZERNIO_WEBHOOK_SECRET:
+        return True
+    computed = hmac.new(
+        ZERNIO_WEBHOOK_SECRET.encode("utf-8"), raw_body, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(computed, (signature or "").strip())
+
+
+def send_zernio_message(conversation_id: str, account_id: str, text: str) -> bool:
+    """Send a reply into an existing Zernio conversation (IG/WhatsApp).
+    Only works inside the platform's 24h customer-service window."""
+    if not ZERNIO_API_KEY:
+        print("[zernio] API key not configured")
+        return False
+    if not (conversation_id and account_id):
+        print("[zernio] missing conversation_id/account_id — cannot send")
+        return False
+    url = f"{ZERNIO_API_BASE}/inbox/conversations/{conversation_id}/messages"
+    try:
+        res = requests.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {ZERNIO_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={"accountId": account_id, "message": text},
+            timeout=20,
+        )
+        if res.status_code in (200, 201):
+            print("[zernio] sent")
+            return True
+        print(f"[zernio] send failed {res.status_code}: {res.text[:200]}")
+    except Exception as e:
+        print(f"[zernio] send error: {e}")
+    return False
+
 
 # ─────────────────────────────────────────────
 # Knowledge base
@@ -745,6 +816,69 @@ async def email_inbound(req: Request, token: str = ""):
     return {"ok": True}
 
 
+@app.post("/zernio/inbound")
+async def zernio_inbound(req: Request):
+    """Inbound Instagram/WhatsApp messages from Zernio. Verifies the HMAC
+    signature, de-dups by event id, and stores incoming DMs as escalated
+    sessions keyed ig-{id} / wa-{id} — same shape as the email inbox."""
+    raw = await req.body()
+    if not _zernio_verify(raw, req.headers.get("X-Zernio-Signature", "")):
+        raise HTTPException(status_code=401, detail="bad signature")
+
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return {"ok": True}
+
+    if payload.get("event") != "message.received":
+        return {"ok": True}  # ignore delivery receipts, reactions, etc.
+
+    event_id = payload.get("id") or req.headers.get("X-Zernio-Event-Id", "")
+    if _zernio_already_seen(event_id):
+        return {"ok": True}
+
+    msg     = payload.get("message") or {}
+    convo   = payload.get("conversation") or {}
+    account = payload.get("account") or {}
+
+    # Only handle real inbound messages on the two platforms we support.
+    if msg.get("direction") != "incoming":
+        return {"ok": True}
+    channel = ZERNIO_PLATFORMS.get((msg.get("platform") or "").lower())
+    if not channel:
+        return {"ok": True}
+
+    text = (msg.get("text") or "").strip()
+
+    # First image attachment (if any) — store its URL for display in the inbox.
+    image_url = None
+    for att in (msg.get("attachments") or []):
+        atype = (att.get("type") or "").lower()
+        if atype.startswith("image") or atype == "photo":
+            image_url = att.get("url")
+            break
+
+    participant_id   = convo.get("participantId") or ""
+    participant_name = (convo.get("participantName")
+                        or convo.get("participantUsername") or "")
+    conversation_id  = msg.get("conversationId") or convo.get("id") or ""
+    account_id       = account.get("id") or account.get("_id") or ""
+
+    prefix = "ig" if channel == "instagram" else "wa"
+    session_id = f"{prefix}-{participant_id or conversation_id}"
+    if session_id in (f"{prefix}-", prefix):
+        return {"ok": True}  # nothing to key on
+
+    db.ensure_session(session_id)
+    db.set_channel_meta(session_id, channel, conversation_id, account_id,
+                        participant_name)
+
+    stored = text or ("[התקבלה תמונה]" if image_url else "")
+    db.add_message(session_id, "user", stored, image_url)
+    db.set_status(session_id, "escalated", f"פנייה ב{channel}")
+    return {"ok": True}
+
+
 @app.get("/poll")
 def poll(session_id: str, after_id: int = 0):
     """Return new assistant + human messages after a cursor (for the widget)."""
@@ -821,8 +955,16 @@ def admin_reply(req: ReplyRequest, _: bool = Depends(check_admin)):
     if not email and req.session_id.startswith("email-"):
         email = req.session_id[len("email-"):].strip()
 
+    # Instagram / WhatsApp: deliver through Zernio into the stored conversation.
+    if channel in ("instagram", "whatsapp"):
+        ok = send_zernio_message(
+            sess.get("zernio_conversation_id") or "",
+            sess.get("zernio_account_id") or "",
+            req.content,
+        )
+        return {"ok": True, "sent": ok}
+
     # A pure email channel has no widget — always deliver by mail.
-    # (Future IG/WhatsApp channels will get their own delivery here.)
     force_mail = channel == "email"
 
     # "Reply by mail" sends the email AND keeps the widget copy above.
@@ -1188,6 +1330,10 @@ ADMIN_HTML = """
           chan = '<span class="badge" style="background:#e7f6e7;color:#1a7a3a;margin-left:4px">📧 מייל</span>';
         } else if (s.channel === 'form') {
           chan = '<span class="badge" style="background:#eef4ff;color:#2456b8;margin-left:4px">📝 טופס</span>';
+        } else if (s.channel === 'instagram') {
+          chan = '<span class="badge" style="background:#fce4f3;color:#c026a3;margin-left:4px">📷 אינסטגרם</span>';
+        } else if (s.channel === 'whatsapp') {
+          chan = '<span class="badge" style="background:#e3f7e8;color:#1b8f4d;margin-left:4px">💬 וואטסאפ</span>';
         } else if (s.customer_email) {
           chan = '<span class="badge" style="background:#e7f6e7;color:#1a7a3a;margin-left:4px">💬+📧</span>';
         }
@@ -1406,6 +1552,7 @@ ADMIN_HTML = """
       .then(r=>r.json())
       .then(d=>{
         if(via==='mail' && d.emailed === false){ alert('נשמר, אך שליחת המייל ללקוח נכשלה — בדוק את הלוגים'); }
+        if(d.sent === false){ alert('שליחת ההודעה ללקוח נכשלה — ייתכן שחלון 24 השעות נסגר. בדוק את הלוגים.'); }
         loadMsgs();
       })
       .catch(()=>{ alert('שגיאה בשליחה'); loadMsgs(); });
