@@ -1023,7 +1023,7 @@ ADMIN_HTML = """
   .m.assistant { align-self:flex-end; background:var(--black); color:#fff; }
   .m.human { align-self:flex-end; background:var(--gold); color:#0a0a0a; }
   .m .who { font-size:10px; opacity:.6; margin-bottom:3px; }
-  .composer { display:flex; flex-wrap:wrap; gap:8px; padding:12px; background:#fff; border-top:1px solid #e2e2e2; }
+  .composer { display:flex; flex-wrap:wrap; align-items:flex-end; gap:8px; padding:12px; background:#fff; border-top:1px solid #e2e2e2; }
   .composer input, .composer textarea { flex:1; padding:11px 14px; border:1px solid #d8d8d8; border-radius:18px; font-family:inherit; font-size:14px; resize:vertical; line-height:1.5; }
   .composer button { padding:0 18px; border:none; border-radius:22px; background:var(--gold); cursor:pointer; font-weight:700; }
   .composer .hb { background:#eee; }
