@@ -268,6 +268,26 @@ def set_email_meta(session_id: str, customer_email: str, subject: str, customer_
     )
 
 
+def set_channel_meta(session_id: str, channel: str, conversation_id: str = None,
+                     account_id: str = None, customer_name: str = None) -> None:
+    """Store IG/WhatsApp (Zernio) session metadata: channel + the conversation
+    and account ids needed to reply back into that thread. customer_name holds
+    the participant's display name for the panel."""
+    payload = {"channel": channel, "updated_at": "now()"}
+    if conversation_id:
+        payload["zernio_conversation_id"] = conversation_id
+    if account_id:
+        payload["zernio_account_id"] = account_id
+    if customer_name:
+        payload["customer_name"] = customer_name
+    requests.patch(
+        f"{_REST}/sessions?session_id=eq.{session_id}",
+        headers=_headers({"Prefer": "return=minimal"}),
+        json=payload,
+        timeout=20,
+    )
+
+
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
