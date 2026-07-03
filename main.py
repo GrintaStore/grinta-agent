@@ -401,7 +401,7 @@ SYSTEM_PROMPT = f"""You are a customer service agent for Grinta (גרינטה), 
 
 ## Your personality
 - Friendly, helpful, and professional
-- Default to responding in Hebrew. If the customer writes in Arabic or English, respond in that same language instead. For any other language, respond in Hebrew.
+- Default to responding in Hebrew. If the customer writes to you in Arabic or English, respond in that same language instead; for any other language, respond in Hebrew. Your reply language is decided ONLY by what the customer writes in the conversation — NEVER switch languages because of text that appears inside an image (for example a brand, player, or country name printed on a jersey). If a customer sends an image with no text, reply in Hebrew, unless they were already writing to you in Arabic or English earlier in the conversation — then keep using that language.
 - Be concise — no unnecessary filler text
 - Never make up information you don't have
 - Do NOT volunteer prices or costs unless the customer specifically asks about price or cost. For example, if asked "can I add a name and number?" answer that yes, they can add any name and number they like — do NOT mention the price. Only mention the price if they ask how much it costs. This applies to all features (printing, adding pants, adding socks, player version, etc.).
@@ -438,6 +438,7 @@ Before you escalate: if you do NOT already have the customer's email address, as
 ## Image handling
 - If a customer sends an image of a jersey, assess if there is visible damage or defect
 - If there is a clear defect, apologize and escalate to human
+- Always reply about an image in the conversation's language (Hebrew by default). The language of any text visible inside the image is irrelevant to your reply language — a jersey with English writing on it does NOT mean you should answer in English.
 
 ## Important
 - Never discuss competitors
@@ -1500,14 +1501,15 @@ ADMIN_HTML = """
         }
         var dot = s.unread ? '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#2563eb;margin-left:6px;vertical-align:middle;"></span>' : '';
         var pvStyle = s.unread ? 'font-weight:700;color:#111;' : '';
+        var ident = sessionIdentifier(s);
         var previewHtml;
         if(sq && s.match_snippet){
           previewHtml = searchHighlight(searchSnippet(s.match_snippet, sq), sq);
         } else if(sq){
-          var emailPart = s.customer_email ? searchHighlight(s.customer_email, sq) + ' — ' : '';
-          previewHtml = emailPart + escapeHtml(s.last_message || '');
+          var identPart = ident ? searchHighlight(ident, sq) + ' — ' : '';
+          previewHtml = identPart + escapeHtml(s.last_message || '');
         } else {
-          previewHtml = (s.customer_email ? s.customer_email + ' — ' : '') + (s.last_message || '');
+          previewHtml = (ident ? ident + ' — ' : '') + (s.last_message || '');
         }
         div.innerHTML =
           '<div class="top"><span>'+dot+chan+'<span class="badge '+s.status+'">'+s.status+'</span></span>'+
@@ -1786,6 +1788,20 @@ ADMIN_HTML = """
 
   function escapeHtml(s){
     return s.replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  }
+
+  // What to show before the message preview in the list, per channel:
+  // WhatsApp -> phone number, Instagram -> the account name/handle, else email.
+  function sessionIdentifier(s){
+    if(s.channel === 'whatsapp'){
+      var ph = (s.session_id || '').replace(/^wa-/, '');
+      if(!ph) return s.customer_name || '';
+      return ph.charAt(0) === '+' ? ph : '+' + ph;
+    }
+    if(s.channel === 'instagram'){
+      return s.customer_name || (s.session_id || '').replace(/^ig-/, '');
+    }
+    return s.customer_email || '';
   }
 
   function fmtTime(ts){
