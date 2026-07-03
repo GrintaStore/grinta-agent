@@ -342,19 +342,21 @@ def send_zernio_message(conversation_id: str, account_id: str, text: str) -> boo
             json={"accountId": account_id, "message": text},
             timeout=20,
         )
+        # Log the full response so we can see what Zernio actually did — a 2xx can
+        # still be a no-op or carry an error body.
+        print(f"[zernio] POST {url} account={account_id} -> {res.status_code}: {res.text[:500]}")
         if res.status_code in (200, 201):
-            print("[zernio] sent")
             return True
-        print(f"[zernio] send failed {res.status_code}: {res.text[:200]}")
     except Exception as e:
         print(f"[zernio] send error: {e}")
     return False
 
 
-def _recent_human_echo(session_id: str, text: str, within_seconds: int = 180) -> bool:
-    """True if an identical human reply was stored in this session very recently.
-    Used to drop the message.sent webhook echo of a reply we made from the panel
-    (already stored by admin_reply), so it isn't shown twice."""
+def _recent_outgoing_echo(session_id: str, text: str, within_seconds: int = 180) -> bool:
+    """True if an identical outgoing reply (human OR bot) was stored in this
+    session very recently. Used to drop the message.sent webhook echo of a reply
+    we already stored ourselves (panel reply or bot reply), so it isn't shown
+    twice."""
     text = (text or "").strip()
     if not text:
         return False
@@ -364,7 +366,7 @@ def _recent_human_echo(session_id: str, text: str, within_seconds: int = 180) ->
         return False
     now = datetime.now(timezone.utc)
     for m in reversed(msgs[-8:]):  # only the recent tail
-        if m.get("role") != "human":
+        if m.get("role") not in ("human", "assistant"):
             continue
         if (m.get("content") or "").strip() != text:
             continue
@@ -593,16 +595,24 @@ def run_loop(session_id: str, history, current_page: str | None = None, models=N
 
 
 def run_bot_turn(session_id: str):
-    """Generate a bot answer for the current conversation state (used after handback).
-    Runs in a background thread. Saves the assistant reply so the widget can poll it."""
+    """Generate a bot answer for the current conversation state. Runs in a
+    background thread. Saves the assistant reply (so the widget can poll it) and,
+    for IG/WhatsApp sessions, also delivers it out through Zernio."""
     try:
         history = build_history(session_id, skip_last_user=False)
         text, escalated = run_loop(session_id, history)
         # If a human took over again while we were generating, discard
-        fresh = db.get_session(session_id)
-        if fresh and fresh.get("status") == "escalated" and not escalated:
+        fresh = db.get_session(session_id) or {}
+        if fresh.get("status") == "escalated" and not escalated:
+            return
+        if not text:
             return
         db.add_message(session_id, "assistant", text)
+        # IG/WhatsApp: the customer isn't on the widget — send the reply out.
+        channel = (fresh.get("channel") or "").lower()
+        if channel in ("instagram", "whatsapp"):
+            send_zernio_message(fresh.get("zernio_conversation_id") or "",
+                                fresh.get("zernio_account_id") or "", text)
     except Exception as e:
         print(f"[run_bot_turn] error: {e}")
 
@@ -904,14 +914,14 @@ async def zernio_inbound(req: Request):
         return {"ok": True}  # nothing to key on
 
     if is_outgoing:
-        # A message we sent. If it echoes a reply we just made from the panel
-        # (already stored by admin_reply), skip it to avoid a duplicate. If it
-        # came from elsewhere (Zernio inbox / phone), store it as a human reply.
+        # A message we sent. If it echoes a reply we already stored ourselves
+        # (panel reply or bot reply), skip it to avoid a duplicate. If it came
+        # from elsewhere (Zernio inbox / phone), store it as a human reply.
         existed = db.get_session(session_id) is not None
         db.ensure_session(session_id)
         db.set_channel_meta(session_id, channel, conversation_id, account_id,
                             participant_name)
-        if _recent_human_echo(session_id, text):
+        if _recent_outgoing_echo(session_id, text):
             return {"ok": True}
         db.add_message(session_id, "human",
                        text or ("[נשלחה תמונה]" if image_url else ""), image_url)
@@ -920,13 +930,33 @@ async def zernio_inbound(req: Request):
             db.set_status(session_id, "escalated", "שיחה שנפתחה על ידך")
         return {"ok": True}
 
-    # Incoming customer message.
+    # Incoming customer message — handled by the bot exactly like the widget:
+    # the bot answers automatically, escalates when needed, and stays silent
+    # while a human is handling the thread.
     db.ensure_session(session_id)
+
+    # Read handling state BEFORE storing the new message (which bumps the timer).
+    session_before = db.get_session(session_id) or {}
+    was_escalated = session_before.get("status") == "escalated"
+
+    # Auto-handback: escalated but quiet for over 1 hour -> back to the bot.
+    auto_handback = False
+    if was_escalated and _is_stale(session_before.get("updated_at"), 1):
+        db.set_status(session_id, "bot")
+        auto_handback = True
+
     db.set_channel_meta(session_id, channel, conversation_id, account_id,
                         participant_name)
     stored = text or ("[התקבלה תמונה]" if image_url else "")
     db.add_message(session_id, "user", stored, image_url)
-    db.set_status(session_id, "escalated", f"פנייה ב{channel}")
+
+    # A human is handling it -> bot stays silent; the message still shows in the
+    # panel (unread) so the rep sees it.
+    if was_escalated and not auto_handback:
+        return {"ok": True}
+
+    # Otherwise let the bot answer in the background (webhooks must return fast).
+    threading.Thread(target=run_bot_turn, args=(session_id,), daemon=True).start()
     return {"ok": True}
 
 
