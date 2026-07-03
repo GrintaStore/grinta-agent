@@ -509,6 +509,33 @@ def _fetch_image_bytes(url: str):
         return None, None
 
 
+def _rehost_zernio_image(message_id, session_id: str, url: str) -> None:
+    """Download a Zernio attachment (WhatsApp media is auth-protected, so the
+    browser can't load it directly) and re-host it on Supabase, then repoint the
+    stored message at the public Supabase URL so the panel's <img> can show it.
+    Runs in a background thread — keeps the webhook fast."""
+    try:
+        data, mime = _fetch_image_bytes(url)
+        if not data:
+            return
+        hosted = db.upload_image(session_id, data, mime)
+        if hosted:
+            db.update_message_image(message_id, hosted)
+    except Exception as e:
+        print(f"[rehost image] {e}")
+
+
+def _store_inbound_image(row, session_id: str, image_url: str) -> None:
+    """If a just-stored message carries a Zernio image, re-host it in the
+    background so the panel can display it."""
+    if image_url and row and row.get("id"):
+        threading.Thread(
+            target=_rehost_zernio_image,
+            args=(row["id"], session_id, image_url),
+            daemon=True,
+        ).start()
+
+
 def build_history(session_id: str, skip_last_user: bool):
     msgs = db.get_messages(session_id)
     if skip_last_user and msgs and msgs[-1]["role"] == "user":
@@ -974,8 +1001,9 @@ async def zernio_inbound(req: Request):
                             participant_name)
         if _recent_outgoing_echo(session_id, text):
             return {"ok": True}
-        db.add_message(session_id, "human",
-                       text or ("[נשלחה תמונה]" if image_url else ""), image_url)
+        row = db.add_message(session_id, "human",
+                             text or ("[נשלחה תמונה]" if image_url else ""), image_url)
+        _store_inbound_image(row, session_id, image_url)
         # A conversation we started ourselves is human-handled from the start.
         if not existed:
             db.set_status(session_id, "escalated", "שיחה שנפתחה על ידך")
@@ -999,7 +1027,8 @@ async def zernio_inbound(req: Request):
     db.set_channel_meta(session_id, channel, conversation_id, account_id,
                         participant_name)
     stored = text or ("[התקבלה תמונה]" if image_url else "")
-    db.add_message(session_id, "user", stored, image_url)
+    row = db.add_message(session_id, "user", stored, image_url)
+    _store_inbound_image(row, session_id, image_url)
 
     # A human is handling it -> bot stays silent; the message still shows in the
     # panel (unread) so the rep sees it.
