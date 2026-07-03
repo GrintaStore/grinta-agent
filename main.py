@@ -479,14 +479,65 @@ def root():
     return {"status": "Grinta CS Agent is running"}
 
 
+def _fetch_image_bytes(url: str):
+    """Download an image (Supabase/widget or Zernio attachment URL) so the model
+    can see it. Returns (bytes, mime_type) or (None, None) on any failure."""
+    if not url:
+        return None, None
+    try:
+        headers = {}
+        if "zernio.com" in url and ZERNIO_API_KEY:
+            headers["Authorization"] = f"Bearer {ZERNIO_API_KEY}"
+        res = requests.get(url, headers=headers, timeout=15)
+        if res.status_code != 200:
+            print(f"[image fetch] {res.status_code} for {url[:80]}")
+            return None, None
+        mime = (res.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if not mime.startswith("image/"):
+            low = url.lower()
+            if low.endswith(".png"):
+                mime = "image/png"
+            elif low.endswith(".webp"):
+                mime = "image/webp"
+            elif low.endswith(".gif"):
+                mime = "image/gif"
+            else:
+                mime = "image/jpeg"
+        return res.content, mime
+    except Exception as e:
+        print(f"[image fetch] error: {e}")
+        return None, None
+
+
 def build_history(session_id: str, skip_last_user: bool):
     msgs = db.get_messages(session_id)
     if skip_last_user and msgs and msgs[-1]["role"] == "user":
         msgs = msgs[:-1]
+
+    # Find the most recent customer message that carries an image; we attach the
+    # actual image only for that one (so the model can see it) and keep older
+    # ones as their text placeholder — cheap, and mirrors the widget which only
+    # passes the current turn's image.
+    last_img_idx = -1
+    for i in range(len(msgs) - 1, -1, -1):
+        if msgs[i].get("role") == "user" and msgs[i].get("image_data"):
+            last_img_idx = i
+            break
+
     history = []
-    for m in msgs:
+    for i, m in enumerate(msgs):
         role = "user" if m["role"] == "user" else "model"
-        history.append(types.Content(role=role, parts=[types.Part(text=m["content"])]))
+        parts = []
+        if i == last_img_idx:
+            data, mime = _fetch_image_bytes(m.get("image_data"))
+            if data:
+                parts.append(types.Part.from_bytes(data=data, mime_type=mime))
+        text = m.get("content") or ""
+        if text:
+            parts.append(types.Part(text=text))
+        if not parts:
+            parts.append(types.Part(text=" "))
+        history.append(types.Content(role=role, parts=parts))
     return history
 
 
