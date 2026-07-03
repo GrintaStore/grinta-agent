@@ -351,6 +351,37 @@ def send_zernio_message(conversation_id: str, account_id: str, text: str) -> boo
     return False
 
 
+def _recent_human_echo(session_id: str, text: str, within_seconds: int = 180) -> bool:
+    """True if an identical human reply was stored in this session very recently.
+    Used to drop the message.sent webhook echo of a reply we made from the panel
+    (already stored by admin_reply), so it isn't shown twice."""
+    text = (text or "").strip()
+    if not text:
+        return False
+    try:
+        msgs = db.get_messages(session_id)
+    except Exception:
+        return False
+    now = datetime.now(timezone.utc)
+    for m in reversed(msgs[-8:]):  # only the recent tail
+        if m.get("role") != "human":
+            continue
+        if (m.get("content") or "").strip() != text:
+            continue
+        ca = m.get("created_at")
+        if not ca:
+            return True
+        try:
+            ts = datetime.fromisoformat(ca.replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if (now - ts).total_seconds() <= within_seconds:
+                return True
+        except Exception:
+            return True
+    return False
+
+
 # ─────────────────────────────────────────────
 # Knowledge base
 # ─────────────────────────────────────────────
@@ -830,7 +861,7 @@ async def zernio_inbound(req: Request):
     except Exception:
         return {"ok": True}
 
-    if payload.get("event") != "message.received":
+    if payload.get("event") not in ("message.received", "message.sent"):
         return {"ok": True}  # ignore delivery receipts, reactions, etc.
 
     event_id = payload.get("id") or req.headers.get("X-Zernio-Event-Id", "")
@@ -841,12 +872,13 @@ async def zernio_inbound(req: Request):
     convo   = payload.get("conversation") or {}
     account = payload.get("account") or {}
 
-    # Only handle real inbound messages on the two platforms we support.
-    if msg.get("direction") != "incoming":
-        return {"ok": True}
     channel = ZERNIO_PLATFORMS.get((msg.get("platform") or "").lower())
     if not channel:
         return {"ok": True}
+
+    # Outgoing = a message WE sent (panel reply, Zernio inbox, or synced phone).
+    is_outgoing = (payload.get("event") == "message.sent"
+                   or msg.get("direction") == "outgoing")
 
     text = (msg.get("text") or "").strip()
 
@@ -858,6 +890,8 @@ async def zernio_inbound(req: Request):
             image_url = att.get("url")
             break
 
+    # participantId is always the CUSTOMER (the other party), regardless of
+    # direction — so our messages land in the same session as theirs.
     participant_id   = convo.get("participantId") or ""
     participant_name = (convo.get("participantName")
                         or convo.get("participantUsername") or "")
@@ -869,10 +903,27 @@ async def zernio_inbound(req: Request):
     if session_id in (f"{prefix}-", prefix):
         return {"ok": True}  # nothing to key on
 
+    if is_outgoing:
+        # A message we sent. If it echoes a reply we just made from the panel
+        # (already stored by admin_reply), skip it to avoid a duplicate. If it
+        # came from elsewhere (Zernio inbox / phone), store it as a human reply.
+        existed = db.get_session(session_id) is not None
+        db.ensure_session(session_id)
+        db.set_channel_meta(session_id, channel, conversation_id, account_id,
+                            participant_name)
+        if _recent_human_echo(session_id, text):
+            return {"ok": True}
+        db.add_message(session_id, "human",
+                       text or ("[נשלחה תמונה]" if image_url else ""), image_url)
+        # A conversation we started ourselves is human-handled from the start.
+        if not existed:
+            db.set_status(session_id, "escalated", "שיחה שנפתחה על ידך")
+        return {"ok": True}
+
+    # Incoming customer message.
     db.ensure_session(session_id)
     db.set_channel_meta(session_id, channel, conversation_id, account_id,
                         participant_name)
-
     stored = text or ("[התקבלה תמונה]" if image_url else "")
     db.add_message(session_id, "user", stored, image_url)
     db.set_status(session_id, "escalated", f"פנייה ב{channel}")
