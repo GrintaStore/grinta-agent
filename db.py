@@ -238,6 +238,19 @@ def get_messages(session_id: str) -> list:
     return res.json() if res.status_code == 200 else []
 
 
+def update_message_image(message_id, image_url: str) -> None:
+    """Point a stored message at a new image URL (used to swap a Zernio
+    attachment URL for a re-hosted, browser-loadable Supabase URL)."""
+    if not (message_id and image_url):
+        return
+    requests.patch(
+        f"{_REST}/messages?id=eq.{message_id}",
+        headers=_headers({"Prefer": "return=minimal"}),
+        json={"image_data": image_url},
+        timeout=20,
+    )
+
+
 def get_new_messages_after(session_id: str, after_id: int) -> list:
     """Return assistant + human messages newer than after_id (for widget polling)."""
     url = (
