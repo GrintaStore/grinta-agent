@@ -141,6 +141,22 @@ def list_sessions(only_escalated: bool = False, days: int = 7,
     except Exception as e:
         print(f"[unread merge] {e}")
 
+    # Merge customer_name from the sessions table for any row missing it (the
+    # view doesn't expose it). This is what lets the panel show the Instagram
+    # account name / WhatsApp contact name instead of the raw id.
+    try:
+        if any(not r.get("customer_name") for r in rows):
+            nr = requests.get(
+                f"{_REST}/sessions?select=session_id,customer_name&customer_name=not.is.null",
+                headers=_headers(), timeout=20)
+            if nr.status_code == 200:
+                name_map = {r["session_id"]: r.get("customer_name") for r in nr.json()}
+                for r in rows:
+                    if not r.get("customer_name") and r.get("session_id") in name_map:
+                        r["customer_name"] = name_map[r["session_id"]]
+    except Exception as e:
+        print(f"[name merge] {e}")
+
     # Keyword search: narrows the already-filtered rows by email/name/message text.
     if search and search.strip():
         kw = search.strip()
