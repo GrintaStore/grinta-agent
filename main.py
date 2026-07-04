@@ -585,12 +585,11 @@ def build_system_instruction(current_page: str | None = None,
     if customer_name:
         instruction += (
             "\n\n## Customer\n"
-            f"The customer's first name is: {customer_name}\n"
-            "Address the customer by their FIRST name only, and only when it fits "
-            "naturally (for example a greeting) — don't overuse it. NEVER use their "
-            "surname / last name, even if you can see their full name from an order "
-            "lookup or anywhere else. If this looks like a username/handle or you are "
-            "unsure it is a real name, do NOT use any name."
+            f"The customer's name appears to be: {customer_name}\n"
+            "If this is clearly a real personal name, you MAY address the customer by "
+            "their FIRST name naturally where it fits (for example in a greeting) — but "
+            "don't overuse it. If it looks like a username/handle, a phone number, an "
+            "email, or you are unsure it's a real name, do NOT use it at all."
         )
     if current_page:
         instruction += (
@@ -605,17 +604,15 @@ def build_system_instruction(current_page: str | None = None,
 
 
 def _plausible_name(name: str | None) -> str:
-    """Return only the customer's FIRST name, and only if it looks like a real
-    personal name — not a phone number, email, or empty. The surname is dropped
-    here so it's never handed to the model. Usernames/handles pass through for
-    the model to judge."""
+    """Return the name only if it looks like a real personal name — not a phone
+    number, email, or empty. Usernames/handles are left for the model to judge."""
     name = (name or "").strip()
     if not name or "@" in name:
         return ""
     compact = re.sub(r"[\s+\-()]", "", name)
     if compact.isdigit():  # phone number
         return ""
-    return name.split()[0]  # first name only
+    return name
 
 
 def gemini_generate(history, current_page: str | None = None, models=None,
@@ -652,12 +649,6 @@ def gemini_generate(history, current_page: str | None = None, models=None,
 
 
 def _strip_reasoning(text: str) -> str:
-    """Remove chain-of-thought a model may leak into its reply. Conservative:
-    it only acts when the text actually carries a reasoning label
-    (THOUGHT/THINK/REASONING), so an ordinary reply is never touched.
-    - If a final-answer label (RESPONSE:/ANSWER:/REPLY:) follows the reasoning,
-      keep only what comes after the last such label.
-    - Else, if it opens with a reasoning block ending at a blank line, drop it."""
     if not text:
         return text
     t = text.strip()
@@ -674,7 +665,7 @@ def _strip_reasoning(text: str) -> str:
         if len(blocks) == 2 and blocks[1].strip():
             return blocks[1].strip()
     return t
-
+    
 
 def run_loop(session_id: str, history, current_page: str | None = None, models=None):
     """Run the tool-use loop over a prepared history. Returns (text, escalated)."""
@@ -692,9 +683,6 @@ def run_loop(session_id: str, history, current_page: str | None = None, models=N
         tool_calls = [p for p in parts if p.function_call is not None]
 
         if not tool_calls:
-            # Only the model's ANSWER goes to the customer — never its reasoning.
-            # Drop any parts the model marks as "thought", then strip a labelled
-            # reasoning block if the model wrote one as plain text.
             text = "".join(
                 p.text for p in parts
                 if p.text and not getattr(p, "thought", False)
