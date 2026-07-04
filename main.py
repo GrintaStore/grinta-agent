@@ -569,7 +569,8 @@ def build_history(session_id: str, skip_last_user: bool):
     return history
 
 
-def build_system_instruction(current_page: str | None = None) -> str:
+def build_system_instruction(current_page: str | None = None,
+                             customer_name: str | None = None) -> str:
     """System prompt + the live product catalog (cached, refreshed periodically)."""
     catalog = tools.get_catalog_text()
     instruction = SYSTEM_PROMPT
@@ -579,6 +580,15 @@ def build_system_instruction(current_page: str | None = None) -> str:
             "כל מוצר שמופיע כאן קיים וזמין להזמנה, עם המידות והאופציות שלו. "
             "מוצר שלא מופיע ברשימה — איננו מציעים אותו כרגע.\n\n"
             + catalog
+        )
+    if customer_name:
+        instruction += (
+            "\n\n## Customer\n"
+            f"The customer's name appears to be: {customer_name}\n"
+            "If this is clearly a real personal name, you MAY address the customer by "
+            "their FIRST name naturally where it fits (for example in a greeting) — but "
+            "don't overuse it. If it looks like a username/handle, a phone number, an "
+            "email, or you are unsure it's a real name, do NOT use it at all."
         )
     if current_page:
         instruction += (
@@ -592,9 +602,22 @@ def build_system_instruction(current_page: str | None = None) -> str:
     return instruction
 
 
-def gemini_generate(history, current_page: str | None = None, models=None):
+def _plausible_name(name: str | None) -> str:
+    """Return the name only if it looks like a real personal name — not a phone
+    number, email, or empty. Usernames/handles are left for the model to judge."""
+    name = (name or "").strip()
+    if not name or "@" in name:
+        return ""
+    compact = re.sub(r"[\s+\-()]", "", name)
+    if compact.isdigit():  # phone number
+        return ""
+    return name
+
+
+def gemini_generate(history, current_page: str | None = None, models=None,
+                    customer_name: str | None = None):
     """Try each model in order; fall to the next if one fails (503) or returns empty content."""
-    system_instruction = build_system_instruction(current_page)
+    system_instruction = build_system_instruction(current_page, customer_name)
     last_error = None
     for model_name in (models or MODELS):
         try:
@@ -627,8 +650,12 @@ def gemini_generate(history, current_page: str | None = None, models=None):
 def run_loop(session_id: str, history, current_page: str | None = None, models=None):
     """Run the tool-use loop over a prepared history. Returns (text, escalated)."""
     escalated = False
+    # Give the model the customer's name (when we have a plausible one) so it can
+    # address them by first name where it fits.
+    sess = db.get_session(session_id) or {}
+    customer_name = _plausible_name(sess.get("customer_name"))
     for _ in range(5):
-        response = gemini_generate(history, current_page, models)
+        response = gemini_generate(history, current_page, models, customer_name)
         content = response.candidates[0].content
         history.append(content)
 
