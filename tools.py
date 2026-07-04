@@ -2,6 +2,7 @@ import json
 import time
 import re
 import requests
+from datetime import datetime, timezone
 from google.genai import types
 
 # ─────────────────────────────────────────────
@@ -51,6 +52,26 @@ def _headers() -> dict:
 # Tool functions
 # ─────────────────────────────────────────────
 
+def _order_timing(created_at_iso: str) -> dict:
+    """From a Shopify created_at ISO timestamp, compute how long ago the order was
+    placed and whether it's still inside the 24-hour change/cancel window. Done
+    server-side so the model never has to do date math (which it gets wrong).
+    Returns {hours_since_order, within_24h}; values are None if unparseable."""
+    out = {"hours_since_order": None, "within_24h": None}
+    if not created_at_iso:
+        return out
+    try:
+        ts = datetime.fromisoformat(str(created_at_iso).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        hours = (datetime.now(timezone.utc) - ts).total_seconds() / 3600.0
+        out["hours_since_order"] = round(hours, 1)
+        out["within_24h"] = hours < 24
+    except Exception as e:
+        print(f"[order timing] {e}")
+    return out
+
+
 def get_order_by_email(email: str) -> dict:
     url = f"{BASE}/orders.json?email={email}&status=any"
     res = requests.get(url, headers=_headers())
@@ -71,11 +92,14 @@ def get_order_by_email(email: str) -> dict:
         tracking = None
         if o.get("fulfillments"):
             tracking = o["fulfillments"][0].get("tracking_number")
+        timing = _order_timing(o.get("created_at"))
         result.append({
             "order_number": o["order_number"],
             "fulfillment_status": o.get("fulfillment_status") or "unfulfilled",
             "financial_status": o.get("financial_status"),
             "created_at": o["created_at"][:10],
+            "hours_since_order": timing["hours_since_order"],
+            "within_24h": timing["within_24h"],
             "tracking_number": tracking,
             "items": [i["title"] for i in o["line_items"]]
         })
@@ -93,6 +117,7 @@ def get_order_by_number(order_number: str) -> dict:
     tracking = None
     if o.get("fulfillments"):
         tracking = o["fulfillments"][0].get("tracking_number")
+    timing = _order_timing(o.get("created_at"))
     return {
         "found": True,
         "order_id": str(o["id"]),
@@ -100,6 +125,8 @@ def get_order_by_number(order_number: str) -> dict:
         "fulfillment_status": o.get("fulfillment_status") or "unfulfilled",
         "financial_status": o.get("financial_status"),
         "created_at": o["created_at"][:10],
+        "hours_since_order": timing["hours_since_order"],
+        "within_24h": timing["within_24h"],
         "tracking_number": tracking,
         "items": [i["title"] for i in o["line_items"]]
     }
