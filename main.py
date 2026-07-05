@@ -418,8 +418,11 @@ SYSTEM_PROMPT = f"""You are a customer service agent for Grinta (גרינטה), 
 - If neither is provided, ask the customer for their email or order number first
 - For product/team/jersey/availability questions: the full product catalog is provided below under "Product catalog". Answer ONLY from that list. If a product appears in the catalog, it exists and is available. If a team/product is NOT in the catalog, we don't currently carry it — offer to check if we can source it (ask for club, season, and kit type). NEVER invent products or claim something is out of stock if it appears in the catalog. For availability of a specific SIZE, refer the customer to the size guide / product page, since the catalog lists the size range we offer, not live per-size stock. Each catalog entry includes a link (קישור) — when a customer asks for a product link or where to buy it, give them that exact link. Never invent or guess a link.
 - For cancellations: check the order, then tell the customer whether cancellation is possible based on the 24-hour policy, but explain that a human representative finalizes it. Add a note with add_order_note saying "CANCELLATION REQUESTED BY CUSTOMER"
-- 24-HOUR WINDOW: the order tools return a `within_24h` field (and `hours_since_order`). For ANY question about the 24-hour window — cancelling an order OR changing it (size, name, number, adding an item) — rely ONLY on `within_24h`. If it is true, the order is still within the window; if it is false, MORE than 24 hours have passed — do NOT tell the customer the change/cancel is allowed; instead say the 24-hour window has passed and you'll check whether it's still possible (per policy). NEVER calculate the elapsed time yourself from dates, and never assume an order was placed "today".
+- 24-HOUR WINDOW: the order tools return a `within_24h` field (and `hours_since_order`). ONLY bring up the 24-hour window, cancellation, or order changes when the customer EXPLICITLY asks to cancel or change their order. NEVER volunteer it and NEVER proactively offer to cancel or change an order — for a delivery, status, or tracking question, do not mention the 24-hour window at all. When the customer DOES ask to cancel or change (size, name, number, adding an item), rely ONLY on `within_24h`: if it is true, the order is still within the window; if it is false, MORE than 24 hours have passed — do NOT tell the customer the change/cancel is allowed; instead say the 24-hour window has passed and you'll check whether it's still possible (per policy). NEVER calculate the elapsed time yourself from dates, and never assume an order was placed "today".
 - For returns: tell the customer whether they meet the return conditions, but explain the final approval is done by the team
+- NEVER output raw tool results, JSON, dictionaries, code, or HTML to the customer. Always answer in a normal sentence in the conversation's language (Hebrew by default). If a tool returns an error or a lookup fails, explain it plainly to the customer (for example, that you couldn't find an order with that number) — never paste the raw error text.
+- NEVER call add_order_note (or any tool) with an order id, order number, or details you invented. Only use an order_id that a get_order_by_number lookup returned in THIS conversation. If you don't have a real order, do a lookup first or ask the customer — do not make up ids or notes.
+- TRACKING LINK: to give a customer a tracking link, use ONLY the exact `tracking_url` returned by the order tool. NEVER build, guess, or modify a tracking URL yourself (do not invent domains like tracking.hfd.co.il or append the tracking number to a made-up link). If `tracking_url` is empty/missing, do NOT provide a link at all — give the tracking number if there is one and tell the customer the order was shipped with HFD, or that the link isn't available yet; when there's a genuine delivery problem, escalate to a human.
 
 ## Escalation rules
 ONLY escalate (call escalate_to_human) when you genuinely cannot answer or resolve something.
@@ -649,6 +652,12 @@ def gemini_generate(history, current_page: str | None = None, models=None,
 
 
 def _strip_reasoning(text: str) -> str:
+    """Remove chain-of-thought a model may leak into its reply. Conservative:
+    it only acts when the text actually carries a reasoning label
+    (THOUGHT/THINK/REASONING), so an ordinary reply is never touched.
+    - If a final-answer label (RESPONSE:/ANSWER:/REPLY:) follows the reasoning,
+      keep only what comes after the last such label.
+    - Else, if it opens with a reasoning block ending at a blank line, drop it."""
     if not text:
         return text
     t = text.strip()
@@ -665,7 +674,29 @@ def _strip_reasoning(text: str) -> str:
         if len(blocks) == 2 and blocks[1].strip():
             return blocks[1].strip()
     return t
-    
+
+
+# Shown to the customer if the model's reply is a raw tool/JSON/HTML blob.
+_RAW_FALLBACK = "מצטערים, נתקלנו בבעיה טכנית רגעית. אפשר לנסות שוב או לנסח מחדש את הפנייה?"
+
+
+def _looks_like_raw_output(text: str) -> bool:
+    """True if the reply is a raw tool/JSON/HTML blob that must never reach the
+    customer — a leaked dict, error object, or HTML fragment (rather than a
+    normal sentence). Kept tight so ordinary replies are never caught."""
+    if not text:
+        return False
+    t = text.strip()
+    if re.search(r'</?(?:body|html|head|div|span|table|td|tr|p|br|style)\b', t, re.IGNORECASE):
+        return True
+    if t.startswith("<") and ">" in t:
+        return True
+    if re.search(r'\{\s*["\'](?:error|success|order_id|found|message)["\']\s*:', t):
+        return True
+    if t.startswith(("{", "[")) and re.search(r'["\'](?:error|success|order_id|found)["\']', t):
+        return True
+    return False
+
 
 def run_loop(session_id: str, history, current_page: str | None = None, models=None):
     """Run the tool-use loop over a prepared history. Returns (text, escalated)."""
@@ -683,11 +714,17 @@ def run_loop(session_id: str, history, current_page: str | None = None, models=N
         tool_calls = [p for p in parts if p.function_call is not None]
 
         if not tool_calls:
+            # Only the model's ANSWER goes to the customer — never its reasoning:
+            # drop parts marked as "thought", then strip a labelled reasoning
+            # block if the model wrote one as plain text.
             text = "".join(
                 p.text for p in parts
                 if p.text and not getattr(p, "thought", False)
             ).strip()
             text = _strip_reasoning(text)
+            if _looks_like_raw_output(text):
+                print(f"[raw output blocked] {text[:200]}")
+                text = _RAW_FALLBACK
             return text, escalated
 
         tool_response_parts = []
