@@ -72,6 +72,22 @@ def _order_timing(created_at_iso: str) -> dict:
     return out
 
 
+def _tracking_info(order: dict):
+    """Extract (tracking_number, tracking_url) from an order's first fulfillment.
+    Shopify stores the real carrier tracking link in tracking_url / tracking_urls;
+    we must return it so the agent uses the real link instead of inventing one."""
+    fs = order.get("fulfillments") or []
+    if not fs:
+        return None, None
+    f = fs[0]
+    number = f.get("tracking_number")
+    url = f.get("tracking_url")
+    if not url:
+        urls = f.get("tracking_urls") or []
+        url = urls[0] if urls else None
+    return number, url
+
+
 def get_order_by_email(email: str) -> dict:
     url = f"{BASE}/orders.json?email={email}&status=any"
     res = requests.get(url, headers=_headers())
@@ -89,9 +105,7 @@ def get_order_by_email(email: str) -> dict:
         }
     result = []
     for o in orders:
-        tracking = None
-        if o.get("fulfillments"):
-            tracking = o["fulfillments"][0].get("tracking_number")
+        tracking, tracking_url = _tracking_info(o)
         timing = _order_timing(o.get("created_at"))
         result.append({
             "order_number": o["order_number"],
@@ -101,6 +115,7 @@ def get_order_by_email(email: str) -> dict:
             "hours_since_order": timing["hours_since_order"],
             "within_24h": timing["within_24h"],
             "tracking_number": tracking,
+            "tracking_url": tracking_url,
             "items": [i["title"] for i in o["line_items"]]
         })
     return {"found": True, "orders": result, "customer": customer}
@@ -114,9 +129,7 @@ def get_order_by_number(order_number: str) -> dict:
     if not orders:
         return {"found": False, "message": f"Order #{clean} not found."}
     o = orders[0]
-    tracking = None
-    if o.get("fulfillments"):
-        tracking = o["fulfillments"][0].get("tracking_number")
+    tracking, tracking_url = _tracking_info(o)
     timing = _order_timing(o.get("created_at"))
     return {
         "found": True,
@@ -128,6 +141,7 @@ def get_order_by_number(order_number: str) -> dict:
         "hours_since_order": timing["hours_since_order"],
         "within_24h": timing["within_24h"],
         "tracking_number": tracking,
+        "tracking_url": tracking_url,
         "items": [i["title"] for i in o["line_items"]]
     }
 
@@ -246,12 +260,22 @@ def get_catalog_text(max_age: int = 600) -> str:
 
 
 def add_order_note(order_id: str, note: str) -> dict:
+    order_id = str(order_id or "").strip()
+    # Guard against hallucinated ids: order_id must be numeric AND must belong to
+    # a real order (verify with a lookup before writing anything to Shopify).
+    if not order_id.isdigit():
+        return {"success": False,
+                "message": "Invalid order id. Do not invent an order id — first find the order with get_order_by_number, then use the order_id it returns."}
+    check = requests.get(f"{BASE}/orders/{order_id}.json", headers=_headers())
+    if check.status_code != 200:
+        return {"success": False,
+                "message": "No order exists with that id. Do not guess an order id — look the order up first."}
     url = f"{BASE}/orders/{order_id}.json"
     payload = {"order": {"id": order_id, "note": note}}
     res = requests.put(url, headers=_headers(), json=payload)
     if res.status_code == 200:
         return {"success": True, "message": "Note added to order successfully."}
-    return {"success": False, "message": f"Failed to add note. Status: {res.status_code}"}
+    return {"success": False, "message": "Could not add the note right now."}
 
 
 def escalate_to_human(reason: str, summary: str) -> dict:
