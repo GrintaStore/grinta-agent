@@ -1466,6 +1466,10 @@ ADMIN_HTML = """
         <input type="checkbox" id="mailToggle" style="width:15px;height:15px;cursor:pointer;">
         <span id="mailToggleLabel"></span>
       </label>
+      <div id="hintWrap" style="width:100%;">
+        <div style="font-size:12px;color:#888;margin-bottom:4px;display:flex;align-items:center;gap:5px;"><span style="color:var(--gold);">✨</span> הנחיה לסוכן</div>
+        <input id="hintBox" placeholder="למשל: תגיד לו שההזמנה תישלח מחר" style="width:100%;box-sizing:border-box;padding:9px 12px;border:1px solid #e0d3b0;background:#fffdf5;border-radius:12px;font-family:inherit;font-size:13px;outline:none;">
+      </div>
       <textarea id="reply" placeholder="כתוב תשובה ללקוח..." rows="2" oninput="autoGrow(this)" style="max-height:170px;overflow-y:auto;"></textarea>
         <button id="genBtn" onclick="generateDraft()" title="אפשר לכתוב הנחיה קצרה בתיבה לפני הלחיצה — הסוכן יכתוב את הטיוטה לפיה" style="background:#0a0a0a;color:var(--gold)">✨ צור טיוטה</button>
         <button id="sendBtn" onclick="sendReply()">שלח</button>
@@ -1846,7 +1850,7 @@ ADMIN_HTML = """
       if(!current) return;
       var btn = document.getElementById('genBtn');
       var old = btn.textContent;
-      var hint = document.getElementById('reply').value;
+      var hint = document.getElementById('hintBox').value;
       btn.textContent = '...חושב';
       btn.disabled = true;
       fetch('/admin/api/generate', {method:'POST', headers:{'Content-Type':'application/json'},
