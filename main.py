@@ -1644,6 +1644,11 @@ ADMIN_HTML = """
     var comp = document.querySelector('.composer');
     if(comp) comp.style.display = '';
     document.getElementById('convhead').style.display = 'flex';
+    if(current !== id){
+      document.getElementById('reply').value = '';
+      document.getElementById('hintBox').value = '';
+      resetReply();
+    }
     current = id;
     loadSessions();
     loadMsgs();
