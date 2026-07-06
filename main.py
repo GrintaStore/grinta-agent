@@ -1175,6 +1175,7 @@ class ReplyRequest(BaseModel):
     session_id: str
     content: str
     via: str = "widget"
+    draft: str = ""
 
 
 @app.get("/admin/api/sessions")
@@ -1284,11 +1285,22 @@ def admin_generate(req: ReplyRequest, _: bool = Depends(check_admin)):
             "החזר רק את נוסח התשובה ללקוח, ללא הקדמות או הסברים."
         )
 
-    # If the rep typed something in the reply box, use it as a direction/steer
-    # for the draft (e.g. "tell him it'll ship tomorrow", "be firm about the
-    # return policy"). The generated draft then replaces it in the box.
+    # The hint field (req.content) behaves two ways:
+    #  - If the reply box is empty (no draft): it's a direction for a fresh draft.
+    #  - If the reply box already has a draft: it's an instruction to EDIT that
+    #    draft, keeping everything that wasn't asked to change.
     direction = (req.content or "").strip()
-    if direction:
+    existing_draft = (req.draft or "").strip()
+    if existing_draft:
+        instruction = (
+            "להלן טיוטת התשובה הנוכחית שהוכנה ללקוח:\n\n"
+            f"<טיוטה>\n{existing_draft}\n</טיוטה>\n\n"
+            "ערוך את הטיוטה לפי ההנחיה הבאה של הנציג — שנה רק את מה שההנחיה מבקשת, "
+            "השאר את שאר הטקסט כפי שהוא, ושמור על שפת הטיוטה. "
+            f"הנחיה: {direction}\n\n"
+            "החזר רק את נוסח התשובה המעודכן ללקוח, ללא הקדמות, הסברים או תגיות."
+        )
+    elif direction:
         instruction += (
             "\n\nהנחיית הנציג לתשובה — כתוב את התשובה לפי ההנחיה הזו: "
             + direction
@@ -1853,13 +1865,16 @@ ADMIN_HTML = """
 
     function generateDraft(){
       if(!current) return;
+      var hint = document.getElementById('hintBox').value.trim();
+      var draft = document.getElementById('reply').value.trim();
+      // If there's already a draft, the hint is an edit instruction — require one.
+      if(draft && !hint){ alert('כתוב בתיבת ההנחיה מה לשנות בטיוטה.'); return; }
       var btn = document.getElementById('genBtn');
       var old = btn.textContent;
-      var hint = document.getElementById('hintBox').value;
       btn.textContent = '...חושב';
       btn.disabled = true;
       fetch('/admin/api/generate', {method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({session_id: current, content: hint})})
+        body: JSON.stringify({session_id: current, content: hint, draft: draft})})
         .then(r=>r.json())
         .then(d=>{
           if(d.draft){ document.getElementById('reply').value = d.draft; autoGrow(document.getElementById('reply')); }
