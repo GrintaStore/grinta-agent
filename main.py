@@ -607,8 +607,10 @@ def build_system_instruction(current_page: str | None = None,
     if rep_direction:
         instruction += (
             "\n\n## Representative's direction for this reply\n"
-            "A human representative has given the following instruction for how to write "
-            "the next reply. Follow it as guidance for shaping the reply:\n"
+            "You are drafting the reply that a human representative will send to the "
+            "customer. Write the actual answer to the customer's latest question or "
+            "request, using this direction from the representative for how to write "
+            "it:\n"
             f"{rep_direction}"
         )
     return instruction
