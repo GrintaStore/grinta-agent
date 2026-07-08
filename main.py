@@ -574,7 +574,8 @@ def build_history(session_id: str, skip_last_user: bool):
 
 
 def build_system_instruction(current_page: str | None = None,
-                             customer_name: str | None = None) -> str:
+                             customer_name: str | None = None,
+                             rep_direction: str | None = None) -> str:
     """System prompt + the live product catalog (cached, refreshed periodically)."""
     catalog = tools.get_catalog_text()
     instruction = SYSTEM_PROMPT
@@ -603,6 +604,13 @@ def build_system_instruction(current_page: str | None = None,
             'referring to when they say "this jersey", "it", "this", etc. '
             "Only use this when relevant — for general questions, ignore it."
         )
+    if rep_direction:
+        instruction += (
+            "\n\n## Representative's direction for this reply\n"
+            "A human representative has given the following instruction for how to write "
+            "the next reply. Follow it as guidance for shaping the reply:\n"
+            f"{rep_direction}"
+        )
     return instruction
 
 
@@ -619,9 +627,9 @@ def _plausible_name(name: str | None) -> str:
 
 
 def gemini_generate(history, current_page: str | None = None, models=None,
-                    customer_name: str | None = None):
+                    customer_name: str | None = None, rep_direction: str | None = None):
     """Try each model in order; fall to the next if one fails (503) or returns empty content."""
-    system_instruction = build_system_instruction(current_page, customer_name)
+    system_instruction = build_system_instruction(current_page, customer_name, rep_direction)
     last_error = None
     for model_name in (models or MODELS):
         try:
@@ -698,7 +706,8 @@ def _looks_like_raw_output(text: str) -> bool:
     return False
 
 
-def run_loop(session_id: str, history, current_page: str | None = None, models=None):
+def run_loop(session_id: str, history, current_page: str | None = None, models=None,
+             rep_direction: str | None = None):
     """Run the tool-use loop over a prepared history. Returns (text, escalated)."""
     escalated = False
     # Give the model the customer's name (when we have a plausible one) so it can
@@ -706,7 +715,7 @@ def run_loop(session_id: str, history, current_page: str | None = None, models=N
     sess = db.get_session(session_id) or {}
     customer_name = _plausible_name(sess.get("customer_name"))
     for _ in range(5):
-        response = gemini_generate(history, current_page, models, customer_name)
+        response = gemini_generate(history, current_page, models, customer_name, rep_direction)
         content = response.candidates[0].content
         history.append(content)
 
@@ -1285,31 +1294,27 @@ def admin_generate(req: ReplyRequest, _: bool = Depends(check_admin)):
             "החזר רק את נוסח התשובה ללקוח, ללא הקדמות או הסברים."
         )
 
-    # The hint field (req.content) behaves two ways:
-    #  - If the reply box is empty (no draft): it's a direction for a fresh draft.
-    #  - If the reply box already has a draft: it's an instruction to EDIT that
-    #    draft, keeping everything that wasn't asked to change.
+    # The hint field (req.content) is the representative's DIRECTION. It is passed
+    # into the system instruction (rep_direction) — NOT appended to the history —
+    # so the model reads it as guidance, never as a customer message.
+    #  - Reply box empty (no draft): direction steers a fresh draft.
+    #  - Reply box has a draft: direction is an instruction to edit that draft.
     direction = (req.content or "").strip()
     existing_draft = (req.draft or "").strip()
     if existing_draft:
         instruction = (
             "להלן טיוטת התשובה הנוכחית שהוכנה ללקוח:\n\n"
             f"<טיוטה>\n{existing_draft}\n</טיוטה>\n\n"
-            "ערוך את הטיוטה לפי ההנחיה הבאה של הנציג — שנה רק את מה שההנחיה מבקשת, "
-            "השאר את שאר הטקסט כפי שהוא, ושמור על שפת הטיוטה. "
-            f"הנחיה: {direction}\n\n"
+            "ערוך את הטיוטה לפי הנחיית הנציג (שמופיעה בהוראות המערכת) — שנה רק את מה "
+            "שההנחיה מבקשת, השאר את שאר הטקסט כפי שהוא, ושמור על שפת הטיוטה.\n\n"
             "החזר רק את נוסח התשובה המעודכן ללקוח, ללא הקדמות, הסברים או תגיות."
-        )
-    elif direction:
-        instruction += (
-            "\n\nהנחיית הנציג לתשובה — כתוב את התשובה לפי ההנחיה הזו: "
-            + direction
         )
 
     history.append(types.Content(role="user", parts=[types.Part(text=instruction)]))
     try:
         text, _ = run_loop(req.session_id, history,
-                           models=GENERATE_MODELS if is_email else None)
+                           models=GENERATE_MODELS if is_email else None,
+                           rep_direction=direction or None)
     except Exception as e:
         print(f"[generate] error: {e}")
         return {"draft": "", "error": str(e)}
