@@ -150,7 +150,7 @@ def get_order_by_number(order_number: str) -> dict:
 # Product catalog (injected into the prompt, no tool)
 # ─────────────────────────────────────────────
 
-_catalog_cache = {"text": None, "ts": 0}
+_catalog_cache = {"text": None, "ts": 0, "products": None, "pts": 0}
 
 
 def _tags_list(p) -> list:
@@ -259,6 +259,93 @@ def get_catalog_text(max_age: int = 600) -> str:
         return _catalog_cache["text"] or ""
 
 
+# ─────────────────────────────────────────────
+# Team index + product search (replaces dumping the whole catalog)
+# ─────────────────────────────────────────────
+
+def _cached_products(max_age: int = 600) -> list:
+    """Active products, cached — shared by the team index and product search."""
+    now = time.time()
+    if _catalog_cache["products"] and (now - _catalog_cache["pts"] < max_age):
+        return _catalog_cache["products"]
+    try:
+        products = _fetch_all_products()
+        _catalog_cache["products"] = products
+        _catalog_cache["pts"] = now
+        return products
+    except Exception as e:
+        print(f"[products] error: {e}")
+        return _catalog_cache["products"] or []
+
+
+# Every team we stock has a plain men's home shirt: "חולצת {קבוצה} בית".
+# These three prefixes are other shirt types and must NOT be read as team names.
+_TEAM_EXCLUDE = ("חולצת נשים", "חולצה ארוכה", "חולצת אימון")
+_TEAM_RE = re.compile(r"^חולצת\s+(.+?)\s+בית\b")
+
+
+def get_team_index() -> set:
+    """The set of team names exactly as they appear in the catalog, derived from
+    the men's home-shirt title pattern 'חולצת {קבוצה} בית'. Women's / long-sleeve /
+    training shirts are excluded so their words never leak in as a team name."""
+    teams = set()
+    for p in _cached_products():
+        title = (p.get("title") or "").strip()
+        if not title or title.startswith(_TEAM_EXCLUDE):
+            continue
+        m = _TEAM_RE.match(title)
+        if m:
+            teams.add(m.group(1).strip())
+    return teams
+
+
+def get_team_index_text() -> str:
+    """The team list as one comma-separated line, for the system instruction."""
+    teams = sorted(get_team_index())
+    return ", ".join(teams)
+
+
+def _product_line(p: dict) -> str:
+    """One catalog line for a product: title | sizes + options | link.
+    Same format the full catalog used, so nothing downstream changes."""
+    title = (p.get("title") or "").strip()
+    handle = (p.get("handle") or "").strip()
+    line = f"- {title} | {_describe_product(title, _tags_list(p))}"
+    if handle:
+        line += f" | קישור: https://grinta.co.il/products/{handle}"
+    return line
+
+
+_SEARCH_RULES = (
+    "כל מוצר שמופיע ברשימה הזו קיים ובמלאי, וכל המידות בטווח המידות שלו זמינות. "
+    "לעולם אל תאמר שמידה מסוימת אזלה מהמלאי. "
+    "כשמוסרים ללקוח קישור למוצר — השתמש בקישור המדויק שמופיע כאן, לעולם אל תמציא קישור."
+)
+
+
+def search_products(team: str) -> dict:
+    """Return every product whose title contains the given team name.
+    The agent gets the team names verbatim from the team index, so a plain
+    substring match is enough — no normalization needed."""
+    team = (team or "").strip()
+    if not team:
+        return {"found": False, "message": "No team provided."}
+    needle = team.casefold()
+    lines = [
+        _product_line(p) for p in _cached_products()
+        if needle in (p.get("title") or "").casefold()
+    ]
+    if not lines:
+        return {
+            "found": False,
+            "message": ("לא נמצאו מוצרים עבור השם הזה. אל תאמר ללקוח שאיננו מוכרים את הקבוצה — "
+                        "נסה לחפש שוב עם מילת הליבה של שם הקבוצה, ואם עדיין אין תוצאות, "
+                        "הצע ללקוח לבדוק עבורו (בקש מועדון, עונה וסוג ערכה)."),
+        }
+    return {"found": True, "rules": _SEARCH_RULES, "count": len(lines),
+            "products": "\n".join(lines)}
+
+
 def add_order_note(order_id: str, note: str) -> dict:
     order_id = str(order_id or "").strip()
     # Guard against hallucinated ids: order_id must be numeric AND must belong to
@@ -364,6 +451,17 @@ def collect_contact_email(email: str, name: str = None) -> dict:
 TOOLS = [
     types.Tool(function_declarations=[
         types.FunctionDeclaration(
+            name="search_products",
+            description="Get all Grinta products for a football team (club or national team) — shirts, kids kits, pants, jackets, tracksuits — with their sizes, options and product links. Call this for ANY question about products, teams, jerseys, availability, or product links. Pass the team name exactly as it appears in the team list given in your instructions (translate the customer's nickname yourself, e.g. 'בארסה' -> 'ברצלונה').",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "team": types.Schema(type=types.Type.STRING, description="The team name exactly as it appears in the team list, e.g. 'ריאל מדריד'"),
+                },
+                required=["team"]
+            )
+        ),
+        types.FunctionDeclaration(
             name="get_order_by_email",
             description="Search for customer orders using their email address. Use when a customer asks about order status, shipping, tracking, or delivery and provides their email.",
             parameters=types.Schema(
@@ -430,7 +528,9 @@ TOOLS = [
 # ─────────────────────────────────────────────
 
 def dispatch_tool(name: str, args: dict) -> dict:
-    if name == "get_order_by_email":
+    if name == "search_products":
+        return search_products(**args)
+    elif name == "get_order_by_email":
         return get_order_by_email(**args)
     elif name == "get_order_by_number":
         return get_order_by_number(**args)
