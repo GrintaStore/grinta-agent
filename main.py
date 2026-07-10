@@ -270,9 +270,12 @@ def send_customer_email(to_email: str, subject: str, body: str, quote: str | Non
     if images:
         atts = []
         for i, img in enumerate(images, 1):
-            ext = _IMAGE_EXT.get((img.mime or "").lower(), "jpg")
-            suffix = "" if len(images) == 1 else f"-{i}"
-            atts.append({"filename": f"grinta{suffix}.{ext}", "content": img.base64})
+            name = (img.name or "").strip()
+            if not name:
+                ext = _IMAGE_EXT.get((img.mime or "").lower(), "jpg")
+                suffix = "" if len(images) == 1 else f"-{i}"
+                name = f"grinta{suffix}.{ext}"
+            atts.append({"filename": name, "content": img.base64})
         payload["attachments"] = atts
     try:
         res = requests.post(
@@ -340,10 +343,11 @@ def _zernio_verify(raw_body: bytes, signature: str) -> bool:
 
 
 def send_zernio_message(conversation_id: str, account_id: str, text: str,
-                        image_url: str | None = None) -> bool:
+                        image_url: str | None = None, mime: str | None = None) -> bool:
     """Send a reply into an existing Zernio conversation (IG/WhatsApp).
     Only works inside the platform's 24h customer-service window.
-    image_url attaches an image (must be a public URL — we pass the Supabase one)."""
+    image_url attaches a file (must be a public URL — we pass the Supabase one);
+    mime decides the attachmentType (image / video / audio / document)."""
     if not ZERNIO_API_KEY:
         print("[zernio] API key not configured")
         return False
@@ -356,7 +360,7 @@ def send_zernio_message(conversation_id: str, account_id: str, text: str,
     payload = {"accountId": account_id, "message": text or ""}
     if image_url:
         payload["attachmentUrl"] = image_url
-        payload["attachmentType"] = "image"
+        payload["attachmentType"] = _zernio_attachment_type(mime)
     try:
         res = requests.post(
             url,
@@ -369,7 +373,7 @@ def send_zernio_message(conversation_id: str, account_id: str, text: str,
         )
         # Log the full response so we can see what Zernio actually did — a 2xx can
         # still be a no-op or carry an error body.
-        print(f"[zernio] POST {url} account={account_id} img={bool(image_url)} -> {res.status_code}: {res.text[:500]}")
+        print(f"[zernio] POST {url} account={account_id} att={payload.get('attachmentType')} -> {res.status_code}: {res.text[:500]}")
         if res.status_code in (200, 201):
             return True
     except Exception as e:
@@ -1228,10 +1232,27 @@ def check_admin(creds: HTTPBasicCredentials = Depends(security)):
 
 MAX_REPLY_IMAGES = 5
 
+# Channels that accept non-image files (pdf, doc...). Instagram's API has no
+# document message type, and the widget only renders images.
+FILE_CHANNELS = ("whatsapp", "email")
+
+
+def _zernio_attachment_type(mime: str) -> str:
+    """Map a mime type to Zernio's attachmentType."""
+    m = (mime or "").lower()
+    if m.startswith("image/"):
+        return "image"
+    if m.startswith("video/"):
+        return "video"
+    if m.startswith("audio/"):
+        return "audio"
+    return "document"
+
 
 class ImageAttachment(BaseModel):
     base64: str
     mime: str = "image/jpeg"
+    name: str = ""
 
 
 class ReplyRequest(BaseModel):
@@ -1262,22 +1283,9 @@ def admin_messages(session_id: str, _: bool = Depends(check_admin)):
 def admin_reply(req: ReplyRequest, _: bool = Depends(check_admin)):
     imgs = req.images or []
     if len(imgs) > MAX_REPLY_IMAGES:
-        return {"ok": False, "error": f"max {MAX_REPLY_IMAGES} images"}
+        return {"ok": False, "error": f"max {MAX_REPLY_IMAGES} files"}
     if not (req.content or imgs):
         return {"ok": False, "error": "empty message"}
-
-    # Upload every image so each channel can reference a public URL.
-    image_urls = []
-    for img in imgs:
-        try:
-            data = base64.b64decode(img.base64)
-            url = db.upload_image(req.session_id, data, img.mime or "image/jpeg")
-        except Exception as e:
-            print(f"[admin image] {e}")
-            url = None
-        if not url:
-            return {"ok": False, "error": "image upload failed"}
-        image_urls.append(url)
 
     via  = (req.via or "widget").lower()
     sess = db.get_session(req.session_id) or {}
@@ -1286,19 +1294,39 @@ def admin_reply(req: ReplyRequest, _: bool = Depends(check_admin)):
     if not email and req.session_id.startswith("email-"):
         email = req.session_id[len("email-"):].strip()
 
-    # The reply becomes one message per image, because WhatsApp/Instagram send one
-    # attachment per message. WhatsApp supports a caption, so the text rides with
-    # the first image. Instagram does NOT allow text + attachment in one message
-    # (Meta drops the text), so there the text is sent as its own message first.
-    if image_urls:
-        if channel == "instagram" and req.content:
-            parts = [(req.content, None)] + [("", u) for u in image_urls]
-        else:
-            parts = [(req.content, image_urls[0])] + [("", u) for u in image_urls[1:]]
-    else:
-        parts = [(req.content, None)]
+    # Only WhatsApp and email can carry non-image files.
+    if channel not in FILE_CHANNELS:
+        for img in imgs:
+            if not (img.mime or "").lower().startswith("image/"):
+                return {"ok": False, "error": "בערוץ הזה אפשר לצרף תמונות בלבד"}
 
-    for text, url in parts:
+    # Upload every attachment so each channel can reference a public URL.
+    uploads = []   # [(url, mime)]
+    for img in imgs:
+        try:
+            data = base64.b64decode(img.base64)
+            url = db.upload_file(req.session_id, data, img.mime or "image/jpeg", img.name)
+        except Exception as e:
+            print(f"[admin attachment] {e}")
+            url = None
+        if not url:
+            return {"ok": False, "error": "file upload failed"}
+        uploads.append((url, img.mime or "image/jpeg"))
+
+    # The reply becomes one message per attachment, because WhatsApp/Instagram
+    # send one attachment per message. WhatsApp supports a caption, so the text
+    # rides with the first one. Instagram does NOT allow text + attachment in one
+    # message (Meta drops the text), so there the text is sent on its own first.
+    if uploads:
+        if channel == "instagram" and req.content:
+            parts = [(req.content, None, None)] + [("", u, m) for u, m in uploads]
+        else:
+            parts = ([(req.content, uploads[0][0], uploads[0][1])]
+                     + [("", u, m) for u, m in uploads[1:]])
+    else:
+        parts = [(req.content, None, None)]
+
+    for text, url, _mime in parts:
         db.add_message(req.session_id, "human", text, url)
 
     # Instagram / WhatsApp: deliver through Zernio — one message per part.
@@ -1306,8 +1334,8 @@ def admin_reply(req: ReplyRequest, _: bool = Depends(check_admin)):
         conv = sess.get("zernio_conversation_id") or ""
         acct = sess.get("zernio_account_id") or ""
         ok = True
-        for text, url in parts:
-            if not send_zernio_message(conv, acct, text, image_url=url):
+        for text, url, mime in parts:
+            if not send_zernio_message(conv, acct, text, image_url=url, mime=mime):
                 ok = False
         return {"ok": True, "sent": ok}
 
@@ -1768,6 +1796,7 @@ ADMIN_HTML = """
     updatePageBar();
     updateDelivery();
     loadSessionMeta(id);
+    updateAttachAccept();
   }
 
   function loadSessionMeta(id){
@@ -1867,6 +1896,21 @@ ADMIN_HTML = """
     catch(e){ return ''; }
   }
 
+  // A stored attachment is an image (show it) or any other file (link to it).
+  function attachmentHtml(url){
+    var clean = (url || '').split('?')[0];
+    var isImg = /[.](png|jpe?g|webp|gif|bmp|svg)$/i.test(clean);
+    if(isImg){
+      return '<br><img src="'+url+'" style="max-width:200px;border-radius:8px;margin-top:6px">';
+    }
+    var name = decodeURIComponent(clean.split('/').pop() || 'קובץ');
+    name = name.replace(/^[0-9]{10,}-/, '');   // strip the upload timestamp prefix
+    return '<br><a href="'+url+'" target="_blank" rel="noopener noreferrer" '
+      + 'style="display:inline-flex;align-items:center;gap:6px;margin-top:6px;padding:7px 10px;'
+      + 'background:#fafafa;border:1px solid #ddd;border-radius:8px;text-decoration:none;color:#0a58ca;">'
+      + '📄 <span dir="ltr">' + escapeHtml(name) + '</span></a>';
+  }
+
   function loadMsgs(){
     if(viewingBlocklist) return;
     if(!current) return;
@@ -1892,7 +1936,7 @@ ADMIN_HTML = """
           div.className = 'm ' + m.role;
           let html = '<div class="who">'+who+'</div>';
           if (m.content) html += escapeHtml(m.content);
-          if (m.image_data) html += '<br><img src="'+m.image_data+'" style="max-width:200px;border-radius:8px;margin-top:6px">';
+          if (m.image_data) html += attachmentHtml(m.image_data);
           if (m.created_at) html += '<div style="font-size:10px;opacity:.55;margin-top:4px;text-align:left">'+fmtTime(m.created_at)+'</div>';
           div.innerHTML = html;
           box.appendChild(div);
@@ -1912,7 +1956,33 @@ ADMIN_HTML = """
   }
 
   var MAX_IMAGES = 5;
-  var pendingImages = [];   // [{base64, mime, dataUrl}] attached to the next reply
+  var pendingImages = [];   // [{base64, mime, name, dataUrl}] attached to the next reply
+
+  // Only WhatsApp and email conversations can carry non-image files.
+  function currentChannel(){
+    var s = sessionsData.find(x=>x.session_id===current);
+    var ch = (s && s.channel) ? s.channel : '';
+    if(!ch && current && current.indexOf('email-')===0) ch = 'email';
+    return ch;
+  }
+  function filesAllowed(){
+    var ch = currentChannel();
+    return ch === 'whatsapp' || ch === 'email';
+  }
+  function updateAttachAccept(){
+    var f = document.getElementById('imgFile');
+    var b = document.getElementById('attachBtn');
+    if(!f) return;
+    if(filesAllowed()){
+      f.accept = '';
+      if(b) b.title = 'צרף תמונה או קובץ';
+    } else {
+      f.accept = 'image/*';
+      if(b) b.title = 'צרף תמונה';
+    }
+  }
+
+  function isImageMime(m){ return (m||'').indexOf('image/') === 0; }
 
   function renderImgPreview(){
     var box = document.getElementById('imgPreview');
@@ -1922,15 +1992,24 @@ ADMIN_HTML = """
     pendingImages.forEach(function(im, i){
       var wrap = document.createElement('span');
       wrap.style.cssText = 'position:relative;display:inline-block;';
-      var img = document.createElement('img');
-      img.src = im.dataUrl;
-      img.style.cssText = 'height:64px;width:64px;object-fit:cover;border-radius:8px;border:1px solid #ddd;display:block;';
+      var node;
+      if(isImageMime(im.mime)){
+        node = document.createElement('img');
+        node.src = im.dataUrl;
+        node.style.cssText = 'height:64px;width:64px;object-fit:cover;border-radius:8px;border:1px solid #ddd;display:block;';
+      } else {
+        node = document.createElement('div');
+        node.style.cssText = 'height:64px;width:110px;border-radius:8px;border:1px solid #ddd;background:#fafafa;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;padding:0 6px;';
+        node.innerHTML = '<div style="font-size:20px">📄</div>'
+          + '<div style="font-size:10px;color:#666;max-width:98px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+          + escapeHtml(im.name || 'קובץ') + '</div>';
+      }
       var x = document.createElement('button');
       x.textContent = '×';
-      x.title = 'הסר תמונה';
+      x.title = 'הסר';
       x.style.cssText = 'position:absolute;top:-7px;left:-7px;width:20px;height:20px;padding:0;border:none;border-radius:50%;background:#0a0a0a;color:#fff;font-size:13px;line-height:1;cursor:pointer;';
       x.onclick = function(){ removeAdminImage(i); };
-      wrap.appendChild(img);
+      wrap.appendChild(node);
       wrap.appendChild(x);
       box.appendChild(wrap);
     });
@@ -1940,18 +2019,24 @@ ADMIN_HTML = """
     var files = Array.prototype.slice.call(inp.files || []);
     inp.value = '';
     if(!files.length) return;
+    if(!filesAllowed()){
+      var bad = files.filter(function(f){ return !isImageMime(f.type); });
+      if(bad.length){ alert('בשיחה הזו אפשר לצרף תמונות בלבד.'); files = files.filter(function(f){ return isImageMime(f.type); }); }
+      if(!files.length) return;
+    }
     var room = MAX_IMAGES - pendingImages.length;
-    if(room <= 0){ alert('אפשר לצרף עד ' + MAX_IMAGES + ' תמונות.'); return; }
+    if(room <= 0){ alert('אפשר לצרף עד ' + MAX_IMAGES + ' קבצים.'); return; }
     if(files.length > room){
-      alert('אפשר לצרף עד ' + MAX_IMAGES + ' תמונות — נוספו ' + room + ' הראשונות.');
+      alert('אפשר לצרף עד ' + MAX_IMAGES + ' קבצים — נוספו ' + room + ' הראשונים.');
       files = files.slice(0, room);
     }
     files.forEach(function(f){
-      if(f.size > 5*1024*1024){ alert('התמונה "' + f.name + '" גדולה מדי (מקסימום 5MB).'); return; }
+      if(f.size > 5*1024*1024){ alert('הקובץ "' + f.name + '" גדול מדי (מקסימום 5MB).'); return; }
       var r = new FileReader();
       r.onload = function(e){
         var dataUrl = e.target.result;
-        pendingImages.push({ base64: dataUrl.split(',')[1], mime: f.type, dataUrl: dataUrl });
+        pendingImages.push({ base64: dataUrl.split(',')[1], mime: f.type || 'application/octet-stream',
+                             name: f.name || '', dataUrl: dataUrl });
         renderImgPreview();
       };
       r.readAsDataURL(f);
@@ -1978,7 +2063,9 @@ ADMIN_HTML = """
     const via = (toggle && !toggle.disabled && toggle.checked) ? 'mail' : 'widget';
     var body = {session_id: current, content: text, via: via};
     if(pendingImages.length){
-      body.images = pendingImages.map(function(im){ return {base64: im.base64, mime: im.mime}; });
+      body.images = pendingImages.map(function(im){
+        return {base64: im.base64, mime: im.mime, name: im.name};
+      });
     }
     inp.value='';
     resetReply();
