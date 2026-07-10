@@ -1279,22 +1279,27 @@ def admin_reply(req: ReplyRequest, _: bool = Depends(check_admin)):
             return {"ok": False, "error": "image upload failed"}
         image_urls.append(url)
 
-    # The reply becomes one message per image (the text rides with the first),
-    # because WhatsApp/Instagram send one attachment per message.
-    if image_urls:
-        parts = [(req.content, image_urls[0])] + [("", u) for u in image_urls[1:]]
-    else:
-        parts = [(req.content, None)]
-
-    for text, url in parts:
-        db.add_message(req.session_id, "human", text, url)
-
     via  = (req.via or "widget").lower()
     sess = db.get_session(req.session_id) or {}
     channel = (sess.get("channel") or "").lower()
     email = (sess.get("customer_email") or "").strip()
     if not email and req.session_id.startswith("email-"):
         email = req.session_id[len("email-"):].strip()
+
+    # The reply becomes one message per image, because WhatsApp/Instagram send one
+    # attachment per message. WhatsApp supports a caption, so the text rides with
+    # the first image. Instagram does NOT allow text + attachment in one message
+    # (Meta drops the text), so there the text is sent as its own message first.
+    if image_urls:
+        if channel == "instagram" and req.content:
+            parts = [(req.content, None)] + [("", u) for u in image_urls]
+        else:
+            parts = [(req.content, image_urls[0])] + [("", u) for u in image_urls[1:]]
+    else:
+        parts = [(req.content, None)]
+
+    for text, url in parts:
+        db.add_message(req.session_id, "human", text, url)
 
     # Instagram / WhatsApp: deliver through Zernio — one message per part.
     if channel in ("instagram", "whatsapp"):
@@ -1576,7 +1581,7 @@ ADMIN_HTML = """
       <div id="imgPreview" style="width:100%;display:none;padding:0 2px 6px;gap:6px;flex-wrap:wrap;"></div>
       <input id="imgFile" type="file" accept="image/*" multiple style="display:none" onchange="onAdminImagePicked(this)">
       <textarea id="reply" placeholder="כתוב תשובה ללקוח..." rows="2" oninput="autoGrow(this)" style="max-height:170px;overflow-y:auto;"></textarea>
-        <button id="attachBtn" onclick="document.getElementById('imgFile').click()" title="צרף תמונה" style="background:#eee;padding:0 14px;">📎</button>
+        <button id="attachBtn" onclick="document.getElementById('imgFile').click()" title="צרף תמונה" style="background:#eee;padding:0 14px;display:flex;align-items:center;justify-content:center;"><svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:#555;"><path d="M16.5 6v11.5a4 4 0 01-8 0V5a2.5 2.5 0 015 0v10.5a1 1 0 01-2 0V6H10v9.5a2.5 2.5 0 005 0V5a4 4 0 00-8 0v12.5a5.5 5.5 0 0011 0V6h-1.5z"/></svg></button>
         <button id="genBtn" onclick="generateDraft()" title="אפשר לכתוב הנחיה קצרה בתיבה לפני הלחיצה — הסוכן יכתוב את הטיוטה לפיה" style="background:#0a0a0a;color:var(--gold)">✨ צור טיוטה</button>
         <button id="sendBtn" onclick="sendReply()">שלח</button>
         <button class="hb" id="toggleBtn" style="display:none">✋ קח שליטה</button>
