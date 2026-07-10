@@ -251,10 +251,11 @@ _IMAGE_EXT = {"image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png",
 
 
 def send_customer_email(to_email: str, subject: str, body: str, quote: str | None = None,
-                        image_b64: str | None = None, image_mime: str | None = None) -> bool:
+                        images: list | None = None) -> bool:
     """Send a reply to a customer from contact@grinta.co.il via Resend.
-    An image, if given, is sent as a real file attachment (never inline), so it
-    is always delivered and never blocked by the mail client."""
+    Images, if given, are sent as real file attachments on a single email (never
+    inline), so they are always delivered and never blocked by the mail client.
+    Each image is an object with .base64 and .mime."""
     if not RESEND_API_KEY:
         print("[customer email] Resend not configured")
         return False
@@ -266,12 +267,13 @@ def send_customer_email(to_email: str, subject: str, body: str, quote: str | Non
         "html": render_email_html(body, quote),
         "text": body,
     }
-    if image_b64:
-        ext = _IMAGE_EXT.get((image_mime or "").lower(), "jpg")
-        payload["attachments"] = [{
-            "filename": f"grinta.{ext}",
-            "content": image_b64,
-        }]
+    if images:
+        atts = []
+        for i, img in enumerate(images, 1):
+            ext = _IMAGE_EXT.get((img.mime or "").lower(), "jpg")
+            suffix = "" if len(images) == 1 else f"-{i}"
+            atts.append({"filename": f"grinta{suffix}.{ext}", "content": img.base64})
+        payload["attachments"] = atts
     try:
         res = requests.post(
             "https://api.resend.com/emails",
@@ -1224,13 +1226,20 @@ def check_admin(creds: HTTPBasicCredentials = Depends(security)):
     return True
 
 
+MAX_REPLY_IMAGES = 5
+
+
+class ImageAttachment(BaseModel):
+    base64: str
+    mime: str = "image/jpeg"
+
+
 class ReplyRequest(BaseModel):
     session_id: str
     content: str
     via: str = "widget"
     draft: str = ""
-    image_base64: str | None = None
-    image_mime: str | None = None
+    images: list[ImageAttachment] = []
 
 
 @app.get("/admin/api/sessions")
@@ -1251,23 +1260,34 @@ def admin_messages(session_id: str, _: bool = Depends(check_admin)):
 
 @app.post("/admin/api/reply")
 def admin_reply(req: ReplyRequest, _: bool = Depends(check_admin)):
-    # Upload the attached image (if any) so every channel can reference a public URL.
-    image_url = None
-    if req.image_base64:
-        try:
-            img_bytes = base64.b64decode(req.image_base64)
-            image_url = db.upload_image(req.session_id, img_bytes,
-                                        req.image_mime or "image/jpeg")
-        except Exception as e:
-            print(f"[admin image] {e}")
-        if not image_url:
-            return {"ok": False, "error": "image upload failed"}
-
-    if not (req.content or image_url):
+    imgs = req.images or []
+    if len(imgs) > MAX_REPLY_IMAGES:
+        return {"ok": False, "error": f"max {MAX_REPLY_IMAGES} images"}
+    if not (req.content or imgs):
         return {"ok": False, "error": "empty message"}
 
-    # Always store the human reply — it shows in the widget when the visitor returns.
-    db.add_message(req.session_id, "human", req.content, image_url)
+    # Upload every image so each channel can reference a public URL.
+    image_urls = []
+    for img in imgs:
+        try:
+            data = base64.b64decode(img.base64)
+            url = db.upload_image(req.session_id, data, img.mime or "image/jpeg")
+        except Exception as e:
+            print(f"[admin image] {e}")
+            url = None
+        if not url:
+            return {"ok": False, "error": "image upload failed"}
+        image_urls.append(url)
+
+    # The reply becomes one message per image (the text rides with the first),
+    # because WhatsApp/Instagram send one attachment per message.
+    if image_urls:
+        parts = [(req.content, image_urls[0])] + [("", u) for u in image_urls[1:]]
+    else:
+        parts = [(req.content, None)]
+
+    for text, url in parts:
+        db.add_message(req.session_id, "human", text, url)
 
     via  = (req.via or "widget").lower()
     sess = db.get_session(req.session_id) or {}
@@ -1276,14 +1296,14 @@ def admin_reply(req: ReplyRequest, _: bool = Depends(check_admin)):
     if not email and req.session_id.startswith("email-"):
         email = req.session_id[len("email-"):].strip()
 
-    # Instagram / WhatsApp: deliver through Zernio into the stored conversation.
+    # Instagram / WhatsApp: deliver through Zernio — one message per part.
     if channel in ("instagram", "whatsapp"):
-        ok = send_zernio_message(
-            sess.get("zernio_conversation_id") or "",
-            sess.get("zernio_account_id") or "",
-            req.content,
-            image_url=image_url,
-        )
+        conv = sess.get("zernio_conversation_id") or ""
+        acct = sess.get("zernio_account_id") or ""
+        ok = True
+        for text, url in parts:
+            if not send_zernio_message(conv, acct, text, image_url=url):
+                ok = False
         return {"ok": True, "sent": ok}
 
     # A pure email channel has no widget — always deliver by mail.
@@ -1295,13 +1315,13 @@ def admin_reply(req: ReplyRequest, _: bool = Depends(check_admin)):
         msgs = db.get_messages(req.session_id)
         last_user = next((m["content"] for m in reversed(msgs) if m["role"] == "user"), "")
         quote = _clean_quote(last_user)
+        # One email carrying all the images as attachments.
         ok = send_customer_email(
             email,
             sess.get("email_subject") or "פנייתך ל-Grinta",
             req.content,
             quote=quote,
-            image_b64=req.image_base64,
-            image_mime=req.image_mime,
+            images=imgs,
         )
         return {"ok": True, "emailed": ok}
 
@@ -1553,13 +1573,8 @@ ADMIN_HTML = """
         <div style="font-size:12px;color:#888;margin-bottom:4px;display:flex;align-items:center;gap:5px;"><span style="color:var(--gold);">✨</span> הנחיה לסוכן</div>
         <input id="hintBox" placeholder="למשל: תגיד לו שההזמנה תישלח מחר" style="width:100%;box-sizing:border-box;padding:9px 12px;border:1px solid #e0d3b0;background:#fffdf5;border-radius:12px;font-family:inherit;font-size:13px;outline:none;">
       </div>
-      <div id="imgPreview" style="width:100%;display:none;padding:0 2px 6px;">
-        <span style="position:relative;display:inline-block;">
-          <img id="imgPreviewThumb" style="max-height:64px;border-radius:8px;border:1px solid #ddd;display:block;">
-          <button onclick="clearAdminImage()" title="הסר תמונה" style="position:absolute;top:-7px;left:-7px;width:20px;height:20px;padding:0;border:none;border-radius:50%;background:#0a0a0a;color:#fff;font-size:13px;line-height:1;cursor:pointer;height:20px;">&times;</button>
-        </span>
-      </div>
-      <input id="imgFile" type="file" accept="image/*" style="display:none" onchange="onAdminImagePicked(this)">
+      <div id="imgPreview" style="width:100%;display:none;padding:0 2px 6px;gap:6px;flex-wrap:wrap;"></div>
+      <input id="imgFile" type="file" accept="image/*" multiple style="display:none" onchange="onAdminImagePicked(this)">
       <textarea id="reply" placeholder="כתוב תשובה ללקוח..." rows="2" oninput="autoGrow(this)" style="max-height:170px;overflow-y:auto;"></textarea>
         <button id="attachBtn" onclick="document.getElementById('imgFile').click()" title="צרף תמונה" style="background:#eee;padding:0 14px;">📎</button>
         <button id="genBtn" onclick="generateDraft()" title="אפשר לכתוב הנחיה קצרה בתיבה לפני הלחיצה — הסוכן יכתוב את הטיוטה לפיה" style="background:#0a0a0a;color:var(--gold)">✨ צור טיוטה</button>
@@ -1891,39 +1906,75 @@ ADMIN_HTML = """
     if(el){ el.style.height = ''; }
   }
 
-  var pendingImage = null;   // {base64, mime} attached to the next reply
+  var MAX_IMAGES = 5;
+  var pendingImages = [];   // [{base64, mime, dataUrl}] attached to the next reply
+
+  function renderImgPreview(){
+    var box = document.getElementById('imgPreview');
+    if(!pendingImages.length){ box.style.display='none'; box.innerHTML=''; return; }
+    box.style.display = 'flex';
+    box.innerHTML = '';
+    pendingImages.forEach(function(im, i){
+      var wrap = document.createElement('span');
+      wrap.style.cssText = 'position:relative;display:inline-block;';
+      var img = document.createElement('img');
+      img.src = im.dataUrl;
+      img.style.cssText = 'height:64px;width:64px;object-fit:cover;border-radius:8px;border:1px solid #ddd;display:block;';
+      var x = document.createElement('button');
+      x.textContent = '×';
+      x.title = 'הסר תמונה';
+      x.style.cssText = 'position:absolute;top:-7px;left:-7px;width:20px;height:20px;padding:0;border:none;border-radius:50%;background:#0a0a0a;color:#fff;font-size:13px;line-height:1;cursor:pointer;';
+      x.onclick = function(){ removeAdminImage(i); };
+      wrap.appendChild(img);
+      wrap.appendChild(x);
+      box.appendChild(wrap);
+    });
+  }
 
   function onAdminImagePicked(inp){
-    var f = inp.files[0];
-    if(!f) return;
-    if(f.size > 5*1024*1024){ alert('התמונה גדולה מדי (מקסימום 5MB).'); inp.value=''; return; }
-    var r = new FileReader();
-    r.onload = function(e){
-      var dataUrl = e.target.result;
-      pendingImage = { base64: dataUrl.split(',')[1], mime: f.type };
-      document.getElementById('imgPreviewThumb').src = dataUrl;
-      document.getElementById('imgPreview').style.display = 'block';
-    };
-    r.readAsDataURL(f);
+    var files = Array.prototype.slice.call(inp.files || []);
     inp.value = '';
+    if(!files.length) return;
+    var room = MAX_IMAGES - pendingImages.length;
+    if(room <= 0){ alert('אפשר לצרף עד ' + MAX_IMAGES + ' תמונות.'); return; }
+    if(files.length > room){
+      alert('אפשר לצרף עד ' + MAX_IMAGES + ' תמונות — נוספו ' + room + ' הראשונות.');
+      files = files.slice(0, room);
+    }
+    files.forEach(function(f){
+      if(f.size > 5*1024*1024){ alert('התמונה "' + f.name + '" גדולה מדי (מקסימום 5MB).'); return; }
+      var r = new FileReader();
+      r.onload = function(e){
+        var dataUrl = e.target.result;
+        pendingImages.push({ base64: dataUrl.split(',')[1], mime: f.type, dataUrl: dataUrl });
+        renderImgPreview();
+      };
+      r.readAsDataURL(f);
+    });
+  }
+
+  function removeAdminImage(i){
+    pendingImages.splice(i, 1);
+    renderImgPreview();
   }
 
   function clearAdminImage(){
-    pendingImage = null;
-    document.getElementById('imgPreview').style.display = 'none';
-    document.getElementById('imgPreviewThumb').src = '';
+    pendingImages = [];
     document.getElementById('imgFile').value = '';
+    renderImgPreview();
   }
 
   function sendReply(){
     const inp = document.getElementById('reply');
     const text = inp.value.trim();
-    if(!text && !pendingImage) return;
+    if(!text && !pendingImages.length) return;
     if(!current) return;
     const toggle = document.getElementById('mailToggle');
     const via = (toggle && !toggle.disabled && toggle.checked) ? 'mail' : 'widget';
     var body = {session_id: current, content: text, via: via};
-    if(pendingImage){ body.image_base64 = pendingImage.base64; body.image_mime = pendingImage.mime; }
+    if(pendingImages.length){
+      body.images = pendingImages.map(function(im){ return {base64: im.base64, mime: im.mime}; });
+    }
     inp.value='';
     resetReply();
     clearAdminImage();
