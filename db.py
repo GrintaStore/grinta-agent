@@ -248,6 +248,26 @@ def upload_image(session_id: str, data_bytes: bytes, content_type: str) -> str |
     return None
 
 
+def upload_file(session_id: str, data_bytes: bytes, content_type: str,
+                filename: str = None) -> str | None:
+    """Upload any file (image, pdf, doc...) to Supabase Storage, return its public
+    URL. The original filename is kept in the object key so it can be shown to the
+    rep and used as the download name."""
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", (filename or "file").strip())[:80] or "file"
+    fname = f"{session_id}/{int(time.time() * 1000)}-{safe}"
+    url = f"{SUPABASE_URL}/storage/v1/object/chat-images/{fname}"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": content_type or "application/octet-stream",
+    }
+    res = requests.post(url, headers=headers, data=data_bytes, timeout=60)
+    if res.status_code in (200, 201):
+        return f"{SUPABASE_URL}/storage/v1/object/public/chat-images/{fname}"
+    print(f"[storage] file upload failed {res.status_code}: {res.text[:200]}")
+    return None
+
+
 def get_messages(session_id: str) -> list:
     url = f"{_REST}/messages?session_id=eq.{session_id}&order=created_at.asc&select=*"
     res = requests.get(url, headers=_headers(), timeout=20)
