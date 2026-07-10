@@ -809,6 +809,14 @@ def run_loop(session_id: str, history, current_page: str | None = None, models=N
                 em = cust.get("email") or args.get("email")
                 if em:
                     db.set_contact_email(session_id, em, cust.get("name"), cust.get("id"))
+            elif name == "get_order_by_number" and isinstance(result, dict):
+                # An order found by number carries its customer — link them too, so
+                # a visitor who only gave an order number still shows an email in
+                # the panel. Guest checkouts without an email are left unlinked.
+                cust = result.get("customer") or {}
+                em = (cust.get("email") or "").strip()
+                if em:
+                    db.set_contact_email(session_id, em, cust.get("name"), cust.get("id"))
 
             tool_response_parts.append(types.Part(
                 function_response=types.FunctionResponse(
