@@ -523,6 +523,19 @@ TOOLS = [
 ]
 
 
+# Tools available when a human representative is drafting a reply from the panel.
+# escalate_to_human and collect_contact_email are excluded — the representative
+# IS the team, so there is nobody to escalate to and no contact to collect.
+_REP_EXCLUDED_TOOLS = {"escalate_to_human", "collect_contact_email"}
+
+REP_TOOLS = [
+    types.Tool(function_declarations=[
+        fd for fd in TOOLS[0].function_declarations
+        if fd.name not in _REP_EXCLUDED_TOOLS
+    ])
+]
+
+
 # ─────────────────────────────────────────────
 # Dispatcher
 # ─────────────────────────────────────────────
