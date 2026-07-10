@@ -245,12 +245,33 @@ def render_email_html(body_text: str, quote_text: str | None = None) -> str:
             .replace("__GR_BODY__", body_html))
 
 
-def send_customer_email(to_email: str, subject: str, body: str, quote: str | None = None) -> bool:
-    """Send a reply to a customer from contact@grinta.co.il via Resend."""
+# Filename to give an attached image, by mime type.
+_IMAGE_EXT = {"image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png",
+              "image/webp": "webp", "image/gif": "gif"}
+
+
+def send_customer_email(to_email: str, subject: str, body: str, quote: str | None = None,
+                        image_b64: str | None = None, image_mime: str | None = None) -> bool:
+    """Send a reply to a customer from contact@grinta.co.il via Resend.
+    An image, if given, is sent as a real file attachment (never inline), so it
+    is always delivered and never blocked by the mail client."""
     if not RESEND_API_KEY:
         print("[customer email] Resend not configured")
         return False
     reply_subject = subject if subject.lower().startswith("re:") else f"Re: {subject}"
+    payload = {
+        "from": EMAIL_FROM,
+        "to": [to_email],
+        "subject": reply_subject,
+        "html": render_email_html(body, quote),
+        "text": body,
+    }
+    if image_b64:
+        ext = _IMAGE_EXT.get((image_mime or "").lower(), "jpg")
+        payload["attachments"] = [{
+            "filename": f"grinta.{ext}",
+            "content": image_b64,
+        }]
     try:
         res = requests.post(
             "https://api.resend.com/emails",
@@ -258,14 +279,8 @@ def send_customer_email(to_email: str, subject: str, body: str, quote: str | Non
                 "Authorization": f"Bearer {RESEND_API_KEY}",
                 "Content-Type": "application/json",
             },
-            json={
-                "from": EMAIL_FROM,
-                "to": [to_email],
-                "subject": reply_subject,
-                "html": render_email_html(body, quote),
-                "text": body,
-            },
-            timeout=20,
+            json=payload,
+            timeout=30,
         )
         if res.status_code in (200, 201):
             print(f"[customer email] sent to {to_email}")
@@ -322,16 +337,24 @@ def _zernio_verify(raw_body: bytes, signature: str) -> bool:
     return hmac.compare_digest(computed, (signature or "").strip())
 
 
-def send_zernio_message(conversation_id: str, account_id: str, text: str) -> bool:
+def send_zernio_message(conversation_id: str, account_id: str, text: str,
+                        image_url: str | None = None) -> bool:
     """Send a reply into an existing Zernio conversation (IG/WhatsApp).
-    Only works inside the platform's 24h customer-service window."""
+    Only works inside the platform's 24h customer-service window.
+    image_url attaches an image (must be a public URL — we pass the Supabase one)."""
     if not ZERNIO_API_KEY:
         print("[zernio] API key not configured")
         return False
     if not (conversation_id and account_id):
         print("[zernio] missing conversation_id/account_id — cannot send")
         return False
+    if not (text or image_url):
+        return False
     url = f"{ZERNIO_API_BASE}/inbox/conversations/{conversation_id}/messages"
+    payload = {"accountId": account_id, "message": text or ""}
+    if image_url:
+        payload["attachmentUrl"] = image_url
+        payload["attachmentType"] = "image"
     try:
         res = requests.post(
             url,
@@ -339,12 +362,12 @@ def send_zernio_message(conversation_id: str, account_id: str, text: str) -> boo
                 "Authorization": f"Bearer {ZERNIO_API_KEY}",
                 "Content-Type": "application/json",
             },
-            json={"accountId": account_id, "message": text},
-            timeout=20,
+            json=payload,
+            timeout=30,
         )
         # Log the full response so we can see what Zernio actually did — a 2xx can
         # still be a no-op or carry an error body.
-        print(f"[zernio] POST {url} account={account_id} -> {res.status_code}: {res.text[:500]}")
+        print(f"[zernio] POST {url} account={account_id} img={bool(image_url)} -> {res.status_code}: {res.text[:500]}")
         if res.status_code in (200, 201):
             return True
     except Exception as e:
@@ -438,7 +461,10 @@ PROMPT_BODY_1 = f"""
 # representative has nobody to escalate to.
 PROMPT_ESCALATION = """
 ## Escalation rules
-You can and should handle the customer yourself as long as the request is within your knowledge — insist on helping them and answer directly. Escalate (call escalate_to_human) only when the request is outside your knowledge and you truly don't have the information to help.
+ONLY escalate (call escalate_to_human) when you genuinely cannot answer or resolve something.
+As long as the request is within your knowledge, you can and should handle it yourself — insist on helping the customer and answer them directly. There is NO reason to escalate while you are managing fine.
+Escalate only when:
+- The request is outside your knowledge and you truly don't have the information to help
 
 Before you escalate: if you do NOT already have the customer's email address, ask for it first (and their name, if you don't have it) so the team can reply by email — unless the customer already gave these earlier in the conversation (e.g. when checking an order). Once you have the email, call collect_contact_email to save it, then escalate. If you already have the email, just escalate.
 
@@ -1203,6 +1229,8 @@ class ReplyRequest(BaseModel):
     content: str
     via: str = "widget"
     draft: str = ""
+    image_base64: str | None = None
+    image_mime: str | None = None
 
 
 @app.get("/admin/api/sessions")
@@ -1223,8 +1251,23 @@ def admin_messages(session_id: str, _: bool = Depends(check_admin)):
 
 @app.post("/admin/api/reply")
 def admin_reply(req: ReplyRequest, _: bool = Depends(check_admin)):
+    # Upload the attached image (if any) so every channel can reference a public URL.
+    image_url = None
+    if req.image_base64:
+        try:
+            img_bytes = base64.b64decode(req.image_base64)
+            image_url = db.upload_image(req.session_id, img_bytes,
+                                        req.image_mime or "image/jpeg")
+        except Exception as e:
+            print(f"[admin image] {e}")
+        if not image_url:
+            return {"ok": False, "error": "image upload failed"}
+
+    if not (req.content or image_url):
+        return {"ok": False, "error": "empty message"}
+
     # Always store the human reply — it shows in the widget when the visitor returns.
-    db.add_message(req.session_id, "human", req.content)
+    db.add_message(req.session_id, "human", req.content, image_url)
 
     via  = (req.via or "widget").lower()
     sess = db.get_session(req.session_id) or {}
@@ -1239,6 +1282,7 @@ def admin_reply(req: ReplyRequest, _: bool = Depends(check_admin)):
             sess.get("zernio_conversation_id") or "",
             sess.get("zernio_account_id") or "",
             req.content,
+            image_url=image_url,
         )
         return {"ok": True, "sent": ok}
 
@@ -1256,9 +1300,12 @@ def admin_reply(req: ReplyRequest, _: bool = Depends(check_admin)):
             sess.get("email_subject") or "פנייתך ל-Grinta",
             req.content,
             quote=quote,
+            image_b64=req.image_base64,
+            image_mime=req.image_mime,
         )
         return {"ok": True, "emailed": ok}
 
+    # Widget: nothing to send — the visitor polls and picks up image_data.
     return {"ok": True, "emailed": False}
 
 
@@ -1506,7 +1553,15 @@ ADMIN_HTML = """
         <div style="font-size:12px;color:#888;margin-bottom:4px;display:flex;align-items:center;gap:5px;"><span style="color:var(--gold);">✨</span> הנחיה לסוכן</div>
         <input id="hintBox" placeholder="למשל: תגיד לו שההזמנה תישלח מחר" style="width:100%;box-sizing:border-box;padding:9px 12px;border:1px solid #e0d3b0;background:#fffdf5;border-radius:12px;font-family:inherit;font-size:13px;outline:none;">
       </div>
+      <div id="imgPreview" style="width:100%;display:none;padding:0 2px 6px;">
+        <span style="position:relative;display:inline-block;">
+          <img id="imgPreviewThumb" style="max-height:64px;border-radius:8px;border:1px solid #ddd;display:block;">
+          <button onclick="clearAdminImage()" title="הסר תמונה" style="position:absolute;top:-7px;left:-7px;width:20px;height:20px;padding:0;border:none;border-radius:50%;background:#0a0a0a;color:#fff;font-size:13px;line-height:1;cursor:pointer;height:20px;">&times;</button>
+        </span>
+      </div>
+      <input id="imgFile" type="file" accept="image/*" style="display:none" onchange="onAdminImagePicked(this)">
       <textarea id="reply" placeholder="כתוב תשובה ללקוח..." rows="2" oninput="autoGrow(this)" style="max-height:170px;overflow-y:auto;"></textarea>
+        <button id="attachBtn" onclick="document.getElementById('imgFile').click()" title="צרף תמונה" style="background:#eee;padding:0 14px;">📎</button>
         <button id="genBtn" onclick="generateDraft()" title="אפשר לכתוב הנחיה קצרה בתיבה לפני הלחיצה — הסוכן יכתוב את הטיוטה לפיה" style="background:#0a0a0a;color:var(--gold)">✨ צור טיוטה</button>
         <button id="sendBtn" onclick="sendReply()">שלח</button>
         <button class="hb" id="toggleBtn" style="display:none">✋ קח שליטה</button>
@@ -1684,6 +1739,7 @@ ADMIN_HTML = """
       document.getElementById('reply').value = '';
       document.getElementById('hintBox').value = '';
       resetReply();
+      clearAdminImage();
     }
     current = id;
     loadSessions();
@@ -1835,18 +1891,47 @@ ADMIN_HTML = """
     if(el){ el.style.height = ''; }
   }
 
+  var pendingImage = null;   // {base64, mime} attached to the next reply
+
+  function onAdminImagePicked(inp){
+    var f = inp.files[0];
+    if(!f) return;
+    if(f.size > 5*1024*1024){ alert('התמונה גדולה מדי (מקסימום 5MB).'); inp.value=''; return; }
+    var r = new FileReader();
+    r.onload = function(e){
+      var dataUrl = e.target.result;
+      pendingImage = { base64: dataUrl.split(',')[1], mime: f.type };
+      document.getElementById('imgPreviewThumb').src = dataUrl;
+      document.getElementById('imgPreview').style.display = 'block';
+    };
+    r.readAsDataURL(f);
+    inp.value = '';
+  }
+
+  function clearAdminImage(){
+    pendingImage = null;
+    document.getElementById('imgPreview').style.display = 'none';
+    document.getElementById('imgPreviewThumb').src = '';
+    document.getElementById('imgFile').value = '';
+  }
+
   function sendReply(){
     const inp = document.getElementById('reply');
     const text = inp.value.trim();
-    if(!text || !current) return;
+    if(!text && !pendingImage) return;
+    if(!current) return;
     const toggle = document.getElementById('mailToggle');
     const via = (toggle && !toggle.disabled && toggle.checked) ? 'mail' : 'widget';
+    var body = {session_id: current, content: text, via: via};
+    if(pendingImage){ body.image_base64 = pendingImage.base64; body.image_mime = pendingImage.mime; }
     inp.value='';
     resetReply();
+    clearAdminImage();
     fetch('/admin/api/reply', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({session_id: current, content: text, via: via})})
+      body: JSON.stringify(body)})
       .then(r=>r.json())
       .then(d=>{
+        if(d.ok === false){ alert('השליחה נכשלה' + (d.error ? ': '+d.error : '')); }
         if(via==='mail' && d.emailed === false){ alert('נשמר, אך שליחת המייל ללקוח נכשלה — בדוק את הלוגים'); }
         if(d.sent === false){ alert('שליחת ההודעה ללקוח נכשלה — ייתכן שחלון 24 השעות נסגר. בדוק את הלוגים.'); }
         loadMsgs();
