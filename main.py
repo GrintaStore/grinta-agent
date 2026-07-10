@@ -949,6 +949,62 @@ def fetch_inbound_email(email_id: str) -> dict:
     return {}
 
 
+def fetch_inbound_attachments(email_id: str) -> list:
+    """Resend's webhook carries attachment metadata only. Fetch the list here;
+    each item has filename, content_type, size and a signed download_url."""
+    if not (RESEND_API_KEY and email_id):
+        return []
+    try:
+        res = requests.get(
+            f"https://api.resend.com/emails/receiving/{email_id}/attachments",
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+            timeout=20,
+        )
+        if res.status_code == 200:
+            return res.json().get("data") or []
+        print(f"[inbound attachments] failed {res.status_code}: {res.text[:200]}")
+    except Exception as e:
+        print(f"[inbound attachments] error: {e}")
+    return []
+
+
+# Emails carry signature logos and tracking pixels as inline images. Skip tiny
+# images so they don't flood the conversation, and cap how many we store.
+MAX_EMAIL_ATTACHMENTS = 10
+MIN_INLINE_IMAGE_BYTES = 3000
+
+
+def store_email_attachments(session_id: str, email_id: str) -> None:
+    """Download a received email's attachments, re-host them on Supabase, and add
+    one message per file so they show in the panel. Runs in a background thread —
+    Resend expects the webhook to return quickly."""
+    try:
+        atts = fetch_inbound_attachments(email_id)
+        for att in atts[:MAX_EMAIL_ATTACHMENTS]:
+            ctype = (att.get("content_type") or "").lower()
+            size  = att.get("size") or 0
+            name  = att.get("filename") or "file"
+            url   = att.get("download_url")
+            if not url:
+                continue
+            # Drop signature icons / tracking pixels.
+            if ctype.startswith("image/") and size and size < MIN_INLINE_IMAGE_BYTES:
+                continue
+            try:
+                r = requests.get(url, timeout=60)
+                if r.status_code != 200:
+                    print(f"[email attachment] download {r.status_code} for {name}")
+                    continue
+                hosted = db.upload_file(session_id, r.content,
+                                        ctype or "application/octet-stream", name)
+                if hosted:
+                    db.add_message(session_id, "user", "", hosted)
+            except Exception as e:
+                print(f"[email attachment] {name}: {e}")
+    except Exception as e:
+        print(f"[store_email_attachments] {e}")
+
+
 def parse_contact_form(body: str) -> dict | None:
     """Detect a Shopify contact-form notification and pull the real customer
     out of the body. Returns {name, email, content} or None if not a form.
@@ -1080,6 +1136,12 @@ async def email_inbound(req: Request, token: str = ""):
                       shopify_customer_id=shopify_cid)
     db.add_message(session_id, "user", stored)
     db.set_status(session_id, "escalated", "פנייה במייל")
+
+    # Attachments come from a separate Resend API — fetch them in the background
+    # so the webhook returns fast. Each becomes its own message in the panel.
+    if email_id and not form:
+        threading.Thread(target=store_email_attachments,
+                         args=(session_id, email_id), daemon=True).start()
     return {"ok": True}
 
 
