@@ -820,13 +820,47 @@ def run_loop(session_id: str, history, current_page: str | None = None, models=N
     return "מצטערים, נתקלנו בבעיה טכנית. נשמח לעזור לך בדרך אחרת.", escalated
 
 
-def run_bot_turn(session_id: str):
+# ─────────────────────────────────────────────
+# Reply generation: newest message wins
+# ─────────────────────────────────────────────
+# Customers often send one thought across several quick messages. Each of those
+# would otherwise spawn its own reply, racing each other. Every new customer
+# message bumps the session's generation epoch; a reply whose epoch is stale when
+# it finishes is discarded, so only the newest message answers — with every
+# message already in its history.
+# In-memory, like the webhook de-dup: fine for one worker at this volume.
+_gen_lock = threading.Lock()
+_gen_epoch: dict[str, int] = {}
+
+
+def bump_generation(session_id: str) -> int:
+    """A new customer message arrived — invalidate any reply being generated."""
+    with _gen_lock:
+        _gen_epoch[session_id] = _gen_epoch.get(session_id, 0) + 1
+        return _gen_epoch[session_id]
+
+
+def current_generation(session_id: str) -> int:
+    with _gen_lock:
+        return _gen_epoch.get(session_id, 0)
+
+
+def run_bot_turn(session_id: str, epoch: int | None = None):
     """Generate a bot answer for the current conversation state. Runs in a
     background thread. Saves the assistant reply (so the widget can poll it) and,
-    for IG/WhatsApp sessions, also delivers it out through Zernio."""
+    for IG/WhatsApp sessions, also delivers it out through Zernio.
+
+    If a newer customer message arrives while the model is answering, this reply
+    is discarded — the newer turn answers with the fuller conversation."""
+    my_epoch = current_generation(session_id) if epoch is None else epoch
     try:
         history = build_history(session_id, skip_last_user=False)
         text, escalated = run_loop(session_id, history)
+
+        # A newer message arrived while the model was answering — this reply is
+        # stale; the newer turn will answer instead.
+        if current_generation(session_id) != my_epoch:
+            return
         # If a human took over again while we were generating, discard
         fresh = db.get_session(session_id) or {}
         if fresh.get("status") == "escalated" and not escalated:
@@ -900,6 +934,10 @@ def chat(req: ChatRequest, request: Request):
     stored_text = req.message or ("[התקבלה תמונה]" if req.image_base64 else "")
     db.add_message(req.session_id, "user", stored_text, image_url)
 
+    # This message invalidates any reply still being generated for this session,
+    # so if the customer sends several lines in a row only the last one answers.
+    my_epoch = bump_generation(req.session_id)
+
     # Record the customer's current page (for the admin inbox)
     if req.current_page:
         db.set_last_page(req.session_id, req.current_page)
@@ -920,6 +958,11 @@ def chat(req: ChatRequest, request: Request):
     history.append(types.Content(role="user", parts=user_parts))
 
     text, escalated = run_loop(req.session_id, history, req.current_page)
+
+    # The customer sent another message while the model was answering — this reply
+    # is stale. Stay silent; the newer turn answers with the fuller conversation.
+    if current_generation(req.session_id) != my_epoch:
+        return ChatResponse(reply="", session_id=req.session_id)
 
     # Re-check: if a human took over DURING generation, discard the bot's answer
     fresh = db.get_session(req.session_id)
@@ -1240,13 +1283,16 @@ async def zernio_inbound(req: Request):
     row = db.add_message(session_id, "user", stored, image_url)
     _store_inbound_image(row, session_id, image_url)
 
+    # This message invalidates any reply still being generated for this session.
+    epoch = bump_generation(session_id)
+
     # A human is handling it -> bot stays silent; the message still shows in the
     # panel (unread) so the rep sees it.
     if was_escalated and not auto_handback:
         return {"ok": True}
 
     # Otherwise let the bot answer in the background (webhooks must return fast).
-    threading.Thread(target=run_bot_turn, args=(session_id,), daemon=True).start()
+    threading.Thread(target=run_bot_turn, args=(session_id, epoch), daemon=True).start()
     return {"ok": True}
 
 
