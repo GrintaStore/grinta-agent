@@ -438,13 +438,7 @@ PROMPT_BODY_1 = f"""
 # representative has nobody to escalate to.
 PROMPT_ESCALATION = """
 ## Escalation rules
-ONLY escalate (call escalate_to_human) when you genuinely cannot answer or resolve something.
-As long as you have an answer and are managing fine, there is NO reason to escalate.
-Escalate when:
-- The customer is angry or uses aggressive language
-- The customer explicitly asks to speak to a human
-- You truly don't have the information to help
-- The request is unusual and outside everything in your knowledge
+You can and should handle the customer yourself as long as the request is within your knowledge — insist on helping them and answer directly. Escalate (call escalate_to_human) only when the request is outside your knowledge and you truly don't have the information to help.
 
 Before you escalate: if you do NOT already have the customer's email address, ask for it first (and their name, if you don't have it) so the team can reply by email — unless the customer already gave these earlier in the conversation (e.g. when checking an order). Once you have the email, call collect_contact_email to save it, then escalate. If you already have the email, just escalate.
 
@@ -456,8 +450,6 @@ Before you escalate: if you do NOT already have the customer's email address, as
 # Everything after the escalation/contact sections. Shared by both identities.
 PROMPT_BODY_2 = """
 ## Image handling
-- If a customer sends an image of a jersey, assess if there is visible damage or defect
-- If there is a clear defect, apologize and escalate to human
 - Always reply about an image in the conversation's language (Hebrew by default). The language of any text visible inside the image is irrelevant to your reply language — a jersey with English writing on it does NOT mean you should answer in English.
 
 ## Important
@@ -611,11 +603,12 @@ def build_system_instruction(current_page: str | None = None,
             + teams
         )
     if customer_name:
+        first = customer_name.split()[0]
         instruction += (
             "\n\n## Customer\n"
             f"The customer's name appears to be: {customer_name}\n"
-            "If this is clearly a real personal name, you MAY address the customer by "
-            "their FIRST name naturally where it fits (for example in a greeting) — but "
+            f"If this is clearly a real personal name, you MAY address the customer by "
+            f"their FIRST name ({first}) naturally where it fits (for example in a greeting) — but "
             "don't overuse it. If it looks like a username/handle, a phone number, an "
             "email, or you are unsure it's a real name, do NOT use it at all."
         )
