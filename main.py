@@ -397,7 +397,16 @@ def load_knowledge() -> str:
 
 KNOWLEDGE = load_knowledge()
 
-SYSTEM_PROMPT = f"""You are a customer service agent for Grinta (גרינטה), an Israeli online store selling licensed football jerseys.
+# The identity line differs by who is answering: the bot, or a human rep (when a
+# draft is generated from the panel).
+BOT_IDENTITY = "You are a customer service agent for Grinta (גרינטה), an Israeli online store selling licensed football jerseys."
+REP_IDENTITY = ("You are a human representative of Grinta (גרינטה), an Israeli online store selling "
+                "licensed football jerseys. You are writing a reply that will be sent to the customer "
+                "from the Grinta team.")
+
+# Everything from the personality section up to (but not including) the
+# escalation rules. Shared by both identities.
+PROMPT_BODY_1 = f"""
 
 ## Your personality
 - Friendly, helpful, and professional
@@ -423,7 +432,11 @@ SYSTEM_PROMPT = f"""You are a customer service agent for Grinta (גרינטה), 
 - NEVER output raw tool results, JSON, dictionaries, code, or HTML to the customer. Always answer in a normal sentence in the conversation's language (Hebrew by default). If a tool returns an error or a lookup fails, explain it plainly to the customer (for example, that you couldn't find an order with that number) — never paste the raw error text.
 - NEVER call add_order_note (or any tool) with an order id, order number, or details you invented. Only use an order_id that a get_order_by_number lookup returned in THIS conversation. If you don't have a real order, do a lookup first or ask the customer — do not make up ids or notes.
 - TRACKING LINK: to give a customer a tracking link, use ONLY the exact `tracking_url` returned by the order tool. NEVER build, guess, or modify a tracking URL yourself (do not invent domains like tracking.hfd.co.il or append the tracking number to a made-up link). If `tracking_url` is empty/missing, do NOT provide a link at all — give the tracking number if there is one and tell the customer the order was shipped with HFD, or that the link isn't available yet; when there's a genuine delivery problem, escalate to a human.
+"""
 
+# Escalation + contact-email sections. Only the BOT gets these — a human
+# representative has nobody to escalate to.
+PROMPT_ESCALATION = """
 ## Escalation rules
 ONLY escalate (call escalate_to_human) when you genuinely cannot answer or resolve something.
 As long as you have an answer and are managing fine, there is NO reason to escalate.
@@ -438,7 +451,10 @@ Before you escalate: if you do NOT already have the customer's email address, as
 ## Contact email
 - Whenever the customer provides their own email address — for ANY reason, including to check an order — call collect_contact_email to save them as a contact, so the team can follow up by email later. Pass their name too if you know it. Do this naturally in the background; no need to announce it.
 - Saving a NEW contact requires a name. If collect_contact_email replies that a name is needed (need_name), ask the customer for their full name, then call collect_contact_email again with both the email and the name. (If the customer already exists in our system, the name isn't required.)
+"""
 
+# Everything after the escalation/contact sections. Shared by both identities.
+PROMPT_BODY_2 = """
 ## Image handling
 - If a customer sends an image of a jersey, assess if there is visible damage or defect
 - If there is a clear defect, apologize and escalate to human
@@ -449,6 +465,10 @@ Before you escalate: if you do NOT already have the customer's email address, as
 - Never promise things not in the policies
 - Never share other customers' information
 """
+
+# The bot answers live chats; the representative prompt is used for panel drafts.
+SYSTEM_PROMPT     = BOT_IDENTITY + PROMPT_BODY_1 + PROMPT_ESCALATION + PROMPT_BODY_2
+REP_SYSTEM_PROMPT = REP_IDENTITY + PROMPT_BODY_1 + PROMPT_BODY_2
 
 # ─────────────────────────────────────────────
 # FastAPI
@@ -575,10 +595,13 @@ def build_history(session_id: str, skip_last_user: bool):
 
 def build_system_instruction(current_page: str | None = None,
                              customer_name: str | None = None,
-                             rep_direction: str | None = None) -> str:
-    """System prompt + the live product catalog (cached, refreshed periodically)."""
+                             rep_direction: str | None = None,
+                             as_rep: bool = False) -> str:
+    """System prompt + the team index. as_rep swaps the bot identity for the
+    human-representative one (used for panel drafts) and drops the escalation
+    and contact-email sections."""
     teams = tools.get_team_index_text()
-    instruction = SYSTEM_PROMPT
+    instruction = REP_SYSTEM_PROMPT if as_rep else SYSTEM_PROMPT
     if teams:
         instruction += (
             "\n\n## Teams we carry (names exactly as they appear in our catalog)\n"
@@ -608,10 +631,7 @@ def build_system_instruction(current_page: str | None = None,
     if rep_direction:
         instruction += (
             "\n\n## Representative's direction for this reply\n"
-            "You are drafting the reply that a human representative will send to the "
-            "customer. Write the actual answer to the customer's latest question or "
-            "request, following this direction from the representative for how to write "
-            "it:\n"
+            "Follow this direction when writing the reply:\n"
             f"{rep_direction}"
         )
     return instruction
@@ -630,9 +650,11 @@ def _plausible_name(name: str | None) -> str:
 
 
 def gemini_generate(history, current_page: str | None = None, models=None,
-                    customer_name: str | None = None, rep_direction: str | None = None):
+                    customer_name: str | None = None, rep_direction: str | None = None,
+                    as_rep: bool = False):
     """Try each model in order; fall to the next if one fails (503) or returns empty content."""
-    system_instruction = build_system_instruction(current_page, customer_name, rep_direction)
+    system_instruction = build_system_instruction(current_page, customer_name, rep_direction, as_rep)
+    active_tools = tools.REP_TOOLS if as_rep else TOOLS
     last_error = None
     for model_name in (models or MODELS):
         try:
@@ -641,7 +663,7 @@ def gemini_generate(history, current_page: str | None = None, models=None,
                 contents=history,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
-                    tools=TOOLS,
+                    tools=active_tools,
                 )
             )
             # A response can come back "successful" but empty (safety block,
@@ -710,7 +732,7 @@ def _looks_like_raw_output(text: str) -> bool:
 
 
 def run_loop(session_id: str, history, current_page: str | None = None, models=None,
-             rep_direction: str | None = None):
+             rep_direction: str | None = None, as_rep: bool = False):
     """Run the tool-use loop over a prepared history. Returns (text, escalated)."""
     escalated = False
     # Give the model the customer's name (when we have a plausible one) so it can
@@ -718,7 +740,7 @@ def run_loop(session_id: str, history, current_page: str | None = None, models=N
     sess = db.get_session(session_id) or {}
     customer_name = _plausible_name(sess.get("customer_name"))
     for _ in range(5):
-        response = gemini_generate(history, current_page, models, customer_name, rep_direction)
+        response = gemini_generate(history, current_page, models, customer_name, rep_direction, as_rep)
         content = response.candidates[0].content
         history.append(content)
 
@@ -1317,7 +1339,8 @@ def admin_generate(req: ReplyRequest, _: bool = Depends(check_admin)):
     try:
         text, _ = run_loop(req.session_id, history,
                            models=GENERATE_MODELS if is_email else None,
-                           rep_direction=direction or None)
+                           rep_direction=direction or None,
+                           as_rep=True)
     except Exception as e:
         print(f"[generate] error: {e}")
         return {"draft": "", "error": str(e)}
