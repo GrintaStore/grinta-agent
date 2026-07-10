@@ -320,8 +320,6 @@ _SEARCH_RULES = (
     "כל מוצר שמופיע ברשימה הזו קיים ובמלאי, וכל המידות בטווח המידות שלו זמינות. "
     "לעולם אל תאמר שמידה מסוימת אזלה מהמלאי. "
     "כשמוסרים ללקוח קישור למוצר — השתמש בקישור המדויק שמופיע כאן, לעולם אל תמציא קישור."
-    "אל תמסור ללקוח את טווח המידות או את אופציות התוספת (מכנס/גרביים) אלא אם הוא שאל עליהן במפורש — ברשימת מוצרים מסור רק את שם המוצר והקישור."
-    "מסור רק את המוצרים שהלקוח שאל עליהם — לא את כל הרשימה. אם יש עוד סוגי מוצרים לקבוצה, " "הצע בקצרה להראות אותם."
 )
 
 
@@ -348,8 +346,21 @@ def search_products(team: str) -> dict:
             "products": "\n".join(lines)}
 
 
+def _now_israel_stamp() -> str:
+    """Timestamp for order notes, in Israel local time."""
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("Asia/Jerusalem"))
+    except Exception:
+        now = datetime.now(timezone.utc)
+    return now.strftime("%Y-%m-%d %H:%M")
+
+
 def add_order_note(order_id: str, note: str) -> dict:
     order_id = str(order_id or "").strip()
+    note = (note or "").strip()
+    if not note:
+        return {"success": False, "message": "Empty note."}
     # Guard against hallucinated ids: order_id must be numeric AND must belong to
     # a real order (verify with a lookup before writing anything to Shopify).
     if not order_id.isdigit():
@@ -359,8 +370,19 @@ def add_order_note(order_id: str, note: str) -> dict:
     if check.status_code != 200:
         return {"success": False,
                 "message": "No order exists with that id. Do not guess an order id — look the order up first."}
+
+    # Shopify keeps ONE note field per order, and a PUT replaces it. Read the
+    # existing note (null when there is none) and append below it, so earlier
+    # notes are never destroyed. Each entry is stamped with the time it was added.
+    try:
+        existing = (check.json().get("order", {}).get("note") or "").strip()
+    except Exception:
+        existing = ""
+    entry = f"[{_now_israel_stamp()}] {note}"
+    combined = f"{existing}\n{entry}" if existing else entry
+
     url = f"{BASE}/orders/{order_id}.json"
-    payload = {"order": {"id": order_id, "note": note}}
+    payload = {"order": {"id": order_id, "note": combined}}
     res = requests.put(url, headers=_headers(), json=payload)
     if res.status_code == 200:
         return {"success": True, "message": "Note added to order successfully."}
