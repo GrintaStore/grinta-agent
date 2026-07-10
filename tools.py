@@ -131,6 +131,15 @@ def get_order_by_number(order_number: str) -> dict:
     o = orders[0]
     tracking, tracking_url = _tracking_info(o)
     timing = _order_timing(o.get("created_at"))
+    cust = o.get("customer") or {}
+    customer = {}
+    if cust:
+        full = " ".join(x for x in [cust.get("first_name"), cust.get("last_name")] if x).strip()
+        customer = {
+            "id": str(cust["id"]) if cust.get("id") else None,
+            "email": cust.get("email") or None,
+            "name": full or None,
+        }
     return {
         "found": True,
         "order_id": str(o["id"]),
@@ -142,6 +151,7 @@ def get_order_by_number(order_number: str) -> dict:
         "within_24h": timing["within_24h"],
         "tracking_number": tracking,
         "tracking_url": tracking_url,
+        "customer": customer,
         "items": [i["title"] for i in o["line_items"]]
     }
 
@@ -319,9 +329,11 @@ def _product_line(p: dict) -> str:
 _SEARCH_RULES = (
     "כל מוצר שמופיע ברשימה הזו קיים ובמלאי, וכל המידות בטווח המידות שלו זמינות. "
     "לעולם אל תאמר שמידה מסוימת אזלה מהמלאי. "
-    "כשמוסרים ללקוח קישור למוצר — השתמש בקישור המדויק שמופיע כאן, לעולם אל תמציא קישור."
-    "אל תמסור ללקוח את טווח המידות או את אופציות התוספת (מכנס/גרביים) אלא אם הוא שאל עליהן במפורש — ברשימת מוצרים מסור רק את שם המוצר והקישור."
-    "מסור רק את המוצרים שהלקוח שאל עליהם — לא את כל הרשימה. אם יש עוד סוגי מוצרים לקבוצה, " "הצע בקצרה להראות אותם."
+    "כשמוסרים ללקוח קישור למוצר — השתמש בקישור המדויק שמופיע כאן, לעולם אל תמציא קישור. "
+    "אל תמסור ללקוח את טווח המידות או את אופציות התוספת (מכנס/גרביים) אלא אם הוא שאל עליהן במפורש — "
+    "ברשימת מוצרים מסור רק את שם המוצר והקישור. "
+    "מסור רק את המוצרים שהלקוח שאל עליהם — לא את כל הרשימה. אם יש עוד סוגי מוצרים לקבוצה, "
+    "הצע בקצרה להראות אותם."
 )
 
 
