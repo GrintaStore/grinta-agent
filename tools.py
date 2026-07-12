@@ -375,15 +375,25 @@ def add_order_note(order_id: str, note: str) -> dict:
     note = (note or "").strip()
     if not note:
         return {"success": False, "message": "Empty note."}
-    # Guard against hallucinated ids: order_id must be numeric AND must belong to
-    # a real order (verify with a lookup before writing anything to Shopify).
     if not order_id.isdigit():
         return {"success": False,
-                "message": "Invalid order id. Do not invent an order id — first find the order with get_order_by_number, then use the order_id it returns."}
+                "message": "Invalid order id/number. First find the order, then add the note."}
+
+    # The model often passes the ORDER NUMBER (short, e.g. 1475) instead of the
+    # internal Shopify order id (long, e.g. 7658030170355). If the value looks
+    # like an order number, resolve it to the real internal id first.
+    if len(order_id) <= 8:
+        found = get_order_by_number(order_id)
+        if found.get("found") and found.get("order_id"):
+            order_id = found["order_id"]
+        else:
+            return {"success": False,
+                    "message": "No order exists with that number. Verify the order number."}
+
     check = requests.get(f"{BASE}/orders/{order_id}.json", headers=_headers())
     if check.status_code != 200:
         return {"success": False,
-                "message": "No order exists with that id. Do not guess an order id — look the order up first."}
+                "message": "No order exists with that id/number. Look the order up first."}
 
     # Shopify keeps ONE note field per order, and a PUT replaces it. Read the
     # existing note (null when there is none) and append below it, so earlier
@@ -523,11 +533,11 @@ TOOLS = [
         ),
         types.FunctionDeclaration(
             name="add_order_note",
-            description="Add a note to an existing order. Use when a customer requests cancellation or has a special instruction. You must already know the order_id from a previous tool call.",
+            description="Add a note to an existing order. Use when a customer requests a cancellation or a change, or has a special instruction. Pass the order number the customer gave (e.g. 1475) or the internal order_id from a previous lookup — either works.",
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
-                    "order_id": types.Schema(type=types.Type.STRING, description="The Shopify internal order ID (not the order number)"),
+                    "order_id": types.Schema(type=types.Type.STRING, description="The order number the customer gave (e.g. '1475'), or the internal Shopify order id from a previous lookup"),
                     "note": types.Schema(type=types.Type.STRING, description="The note to add to the order"),
                 },
                 required=["order_id", "note"]
