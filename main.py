@@ -653,12 +653,6 @@ def build_system_instruction(current_page: str | None = None,
             '"this jersey", "it", "this", etc. — call search_products with that team to get '
             "its details. Only use this when relevant — for general questions, ignore it."
         )
-    if rep_direction:
-        instruction += (
-            "\n\n## Representative's direction for this reply\n"
-            "Follow this direction when writing the reply:\n"
-            f"{rep_direction}"
-        )
     return instruction
 
 
@@ -1528,13 +1522,14 @@ def admin_generate(req: ReplyRequest, _: bool = Depends(check_admin)):
         )
     else:
         instruction = (
-            "כתוב טיוטת תשובה ללקוח על סמך השיחה עד כה. "
+            "השיחה שלמעלה היא בין הלקוח לבין הבוט. המקרה הופנה כעת אליך — נציג אנושי. "
+            "על סמך השיחה, כתוב את תשובת הנציג האנושי ללקוח. "
             "החזר רק את נוסח התשובה ללקוח, ללא הקדמות או הסברים."
         )
 
-    # The hint field (req.content) is the representative's DIRECTION. It is passed
-    # into the system instruction (rep_direction) — NOT appended to the history —
-    # so the model reads it as guidance, never as a customer message.
+    # The hint field (req.content) is the representative's DIRECTION. It goes into
+    # the task turn at the END of contents (the last thing the model reads before
+    # writing), so it steers the reply instead of competing with the conversation.
     #  - Reply box empty (no draft): direction steers a fresh draft.
     #  - Reply box has a draft: direction is an instruction to edit that draft.
     direction = (req.content or "").strip()
@@ -1543,16 +1538,21 @@ def admin_generate(req: ReplyRequest, _: bool = Depends(check_admin)):
         instruction = (
             "להלן טיוטת התשובה הנוכחית שהוכנה ללקוח:\n\n"
             f"<טיוטה>\n{existing_draft}\n</טיוטה>\n\n"
-            "ערוך את הטיוטה לפי הנחיית הנציג (שמופיעה בהוראות המערכת) — שנה רק את מה "
-            "שההנחיה מבקשת, השאר את שאר הטקסט כפי שהוא, ושמור על שפת הטיוטה.\n\n"
+            "ערוך את הטיוטה לפי ההנחיה הבאה — שנה רק את מה שההנחיה מבקשת, "
+            "השאר את שאר הטקסט כפי שהוא, ושמור על שפת הטיוטה.\n\n"
+            f"הנחיה: {direction}\n\n"
             "החזר רק את נוסח התשובה המעודכן ללקוח, ללא הקדמות, הסברים או תגיות."
+        )
+    elif direction:
+        instruction += (
+            f"\n\nהנחיית הנציג לתשובה: {direction}\n"
+            "כתוב את תשובת הנציג האנושי בהתאם להנחיה הזו ולשיחה שלמעלה."
         )
 
     history.append(types.Content(role="user", parts=[types.Part(text=instruction)]))
     try:
         text, _ = run_loop(req.session_id, history,
                            models=GENERATE_MODELS if is_email else None,
-                           rep_direction=direction or None,
                            as_rep=True)
     except Exception as e:
         print(f"[generate] error: {e}")
