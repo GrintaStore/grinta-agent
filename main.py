@@ -792,7 +792,11 @@ def run_loop(session_id: str, history, current_page: str | None = None, models=N
             name = fc.name
             args = dict(fc.args)
             print(f"[Tool call] {name}({args})")
-            result = dispatch_tool(name, args)
+            try:
+                result = dispatch_tool(name, args)
+            except Exception as e:
+                print(f"[Tool error] {name}: {e}")
+                result = {"error": f"tool {name} failed: {e}"}
 
             # Side effects that depend on the session / result:
             if name == "escalate_to_human":
