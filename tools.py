@@ -403,7 +403,7 @@ def add_order_note(order_id: str, note: str) -> dict:
     return {"success": False, "message": "Could not add the note right now."}
 
 
-def escalate_to_human(reason: str, summary: str) -> dict:
+def escalate_to_human(reason: str = "", summary: str = "") -> dict:
     print("\n" + "="*50)
     print("[ESCALATION REQUIRED]")
     print(f"Reason:  {reason}")
