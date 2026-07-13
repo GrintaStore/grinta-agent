@@ -36,8 +36,6 @@ client = genai.Client(api_key=_get_gemini_key())
 
 # Models are tried in order: if one fails (e.g. 503 overloaded), fall to the next
 MODELS = [
-    "gemini-2.5-flash-lite",
-    "gemini-3.1-flash-lite",
     "gemini-2.5-flash",
     "gemini-3-flash-preview",
 ]
