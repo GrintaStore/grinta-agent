@@ -513,9 +513,17 @@ def escalate_to_human(reason: str = "", summary: str = "") -> dict:
     print(f"Summary: {summary}")
     print("="*50 + "\n")
     # TODO: replace with WhatsApp/email notification
+    # Return an INSTRUCTION, not a finished sentence — so the bot confirms to the
+    # customer in its own words what specifically will be checked and that the
+    # team will get back to them (e.g. "we'll check the pickup-point details with
+    # the courier and get back to you"), tailored to the reason for escalating.
     return {
         "escalated": True,
-        "message": "הפנייה שלך הועברה לצוות Grinta. נחזור אליך בהקדם האפשרי 🙏"
+        "instruction": ("The case was handed to the Grinta team. Tell the customer, in the "
+                        "conversation's language and in your own words, that you've forwarded "
+                        "it to the team, WHAT specifically will be checked (based on their "
+                        "request — e.g. checking the pickup-point details with the courier), "
+                        "and that we'll get back to them soon."),
     }
 
 
