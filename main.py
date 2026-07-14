@@ -449,7 +449,7 @@ PROMPT_BODY_1 = f"""
 {KNOWLEDGE}
 
 ## Tool usage rules
-- If a customer asks about their order, ALWAYS call get_order_by_email or get_order_by_number before responding
+- For "where is my order" / delivery status / tracking questions where you have (or can get) the order number: call get_tracking_status with the order number. Report the real status from `transit_status` and the `timeline` events (e.g. arrived at pickup point, out for delivery, delivered). If the result has a `tracking_url`, give it; NEVER invent a tracking link. If there is no `tracking_url` but there is a tracking number, give the number plus HFD's general tracking page https://run.hfd.co.il/run_public/pub_random_form.htm so the customer can check by number. If `live_tracking` is false (nothing shipped yet), report the normal order info instead and do not state a shipping status.
 - Never invent order information — only report what the tools return
 - If a customer provides an order number, use get_order_by_number
 - If a customer provides an email, use get_order_by_email
