@@ -36,10 +36,10 @@ client = genai.Client(api_key=_get_gemini_key())
 
 # Models are tried in order: if one fails (e.g. 503 overloaded), fall to the next
 MODELS = [
+    "gemini-2.5-flash-lite",
+    "gemini-3.1-flash-lite",
     "gemini-2.5-flash",
     "gemini-3-flash-preview",
-    "gemini-3.1-flash-lite",
-    "gemini-2.5-flash-lite",
 ]
 
 # Stronger models used for email draft generation (better answers + tool use).
@@ -449,6 +449,7 @@ PROMPT_BODY_1 = f"""
 {KNOWLEDGE}
 
 ## Tool usage rules
+- If a customer asks about their order, ALWAYS call get_order_by_email or get_order_by_number before responding
 - Never invent order information — only report what the tools return
 - If a customer provides an order number, use get_order_by_number
 - If a customer provides an email, use get_order_by_email
@@ -459,8 +460,7 @@ PROMPT_BODY_1 = f"""
 - For returns: tell the customer whether they meet the return conditions, but explain the final approval is done by the team
 - NEVER output raw tool results, JSON, dictionaries, code, or HTML to the customer. Always answer in a normal sentence in the conversation's language (Hebrew by default). If a tool returns an error or a lookup fails, explain it plainly to the customer (for example, that you couldn't find an order with that number) — never paste the raw error text.
 - NEVER call add_order_note (or any tool) with an order id, order number, or details you invented. Only use an order_id that a get_order_by_number lookup returned in THIS conversation. If you don't have a real order, do a lookup first or ask the customer — do not make up ids or notes.
-- For "where is my order" / delivery status / tracking questions where you have (or can get) the order number: call get_tracking_status with the order number. Report the real status from `transit_status` and the `timeline` events (e.g. arrived at pickup point, out for delivery, delivered). If the result has a `tracking_url`, give it; NEVER invent a tracking link. If there is no `tracking_url` but there is a tracking number, give the number plus HFD's general tracking page https://run.hfd.co.il/run_public/pub_random_form.htm so the customer can check by number. If `live_tracking` is false (nothing shipped yet), report the normal order info instead and do not state a shipping status.
-- Pickup-point details reach the customer by SMS from the courier. If the customer can't find them, escalate to a human.
+- TRACKING LINK: to give a customer a tracking link, use ONLY the exact `tracking_url` returned by the order tool. NEVER build, guess, or modify a tracking URL yourself (do not invent domains like tracking.hfd.co.il or append the tracking number to a made-up link). If `tracking_url` is empty/missing, do NOT provide a link at all — give the tracking number if there is one and tell the customer the order was shipped with HFD, or that the link isn't available yet; when there's a genuine delivery problem, escalate to a human.
 """
 
 # Escalation + contact-email sections. Only the BOT gets these — a human
@@ -472,7 +472,7 @@ As long as the request is within your knowledge, you can and should handle it yo
 Escalate only when:
 - The request is outside your knowledge and you truly don't have the information to help
 
-Before you escalate: if you do NOT already have the customer's email address, ask for it first (and their name, if you don't have it) so the team can reply by email — unless the customer already gave these earlier in the conversation (e.g. when checking an order). Once you have the email, call collect_contact_email to save it, then escalate. If you already have the email, just escalate.
+Before you escalate, follow the "## Channel" section to decide whether to collect contact details. On WhatsApp/Instagram, never ask — just escalate. On website chat, the Channel section tells you whether we already have the customer's contact: if we do, don't ask again — tell the customer the team will reply by email, and escalate; if we don't, ask for their email and full name, call collect_contact_email to save it, then escalate.
 
 ## Contact email
 - Whenever the customer provides their own email address — for ANY reason, including to check an order — call collect_contact_email to save them as a contact, so the team can follow up by email later. Pass their name too if you know it. Do this naturally in the background; no need to announce it.
@@ -620,7 +620,9 @@ def build_history(session_id: str, skip_last_user: bool):
 def build_system_instruction(current_page: str | None = None,
                              customer_name: str | None = None,
                              rep_direction: str | None = None,
-                             as_rep: bool = False) -> str:
+                             as_rep: bool = False,
+                             channel: str | None = None,
+                             has_contact: bool = False) -> str:
     """System prompt + the team index. as_rep swaps the bot identity for the
     human-representative one (used for panel drafts) and drops the escalation
     and contact-email sections."""
@@ -634,6 +636,27 @@ def build_system_instruction(current_page: str | None = None,
             "עם השם המדויק.\n\n"
             + teams
         )
+    # Tell the bot which channel this conversation is on, and whether we already
+    # have the customer's contact linked — the escalation rules depend on both.
+    if not as_rep:
+        ch = (channel or "web").lower()
+        if ch in ("instagram", "whatsapp"):
+            chan_label = ch
+            chan_note = ("This is a WhatsApp/Instagram conversation — we already have the "
+                         "customer's contact from the platform. NEVER ask for an email or name; "
+                         "when you need to escalate, just escalate.")
+        else:
+            chan_label = "website chat widget"
+            if has_contact:
+                chan_note = ("This is a website chat. We ALREADY have this customer's contact "
+                             "linked (they gave an order number or email earlier). Do NOT ask for "
+                             "email or name again. When escalating, tell the customer the team will "
+                             "get back to them by email, and escalate.")
+            else:
+                chan_note = ("This is a website chat and we do NOT yet have the customer's contact. "
+                             "If you need to escalate, first ask for their email (and full name), "
+                             "call collect_contact_email to save it, then escalate.")
+        instruction += f"\n\n## Channel\nThis conversation is on: {chan_label}.\n{chan_note}"
     if customer_name:
         first = customer_name.split()[0]
         instruction += (
@@ -670,9 +693,11 @@ def _plausible_name(name: str | None) -> str:
 
 def gemini_generate(history, current_page: str | None = None, models=None,
                     customer_name: str | None = None, rep_direction: str | None = None,
-                    as_rep: bool = False):
+                    as_rep: bool = False, channel: str | None = None,
+                    has_contact: bool = False):
     """Try each model in order; fall to the next if one fails (503) or returns empty content."""
-    system_instruction = build_system_instruction(current_page, customer_name, rep_direction, as_rep)
+    system_instruction = build_system_instruction(current_page, customer_name, rep_direction,
+                                                   as_rep, channel, has_contact)
     active_tools = tools.REP_TOOLS if as_rep else TOOLS
     last_error = None
     for model_name in (models or MODELS):
@@ -758,8 +783,14 @@ def run_loop(session_id: str, history, current_page: str | None = None, models=N
     # address them by first name where it fits.
     sess = db.get_session(session_id) or {}
     customer_name = _plausible_name(sess.get("customer_name"))
+    # Channel + whether we already have the customer's contact — the escalation
+    # rules in the prompt depend on both (IG/WhatsApp never ask; linked web chats
+    # don't re-ask; unlinked web chats ask once).
+    channel = (sess.get("channel") or "").lower()
+    has_contact = bool((sess.get("customer_email") or "").strip())
     for _ in range(5):
-        response = gemini_generate(history, current_page, models, customer_name, rep_direction, as_rep)
+        response = gemini_generate(history, current_page, models, customer_name,
+                                   rep_direction, as_rep, channel, has_contact)
         content = response.candidates[0].content
         history.append(content)
 
