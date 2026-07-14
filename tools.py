@@ -27,6 +27,11 @@ CLIENT_SECRET = _config["shopify_client_secret"]
 API_VERSION   = "2026-01"
 BASE          = f"https://{SHOP}/admin/api/{API_VERSION}"
 
+# Track123 — live carrier tracking (real transit status, not just Shopify's).
+TRACK123_API_KEY = os.environ.get("TRACK123_API_KEY", "")
+TRACK123_STORE   = os.environ.get("TRACK123_STORE", "")
+TRACK123_BASE    = "https://shp.track123.com/shopify/api/v1"
+
 
 def _get_token() -> str:
     url = f"https://{SHOP}/admin/oauth/access_token"
@@ -413,6 +418,94 @@ def add_order_note(order_id: str, note: str) -> dict:
     return {"success": False, "message": "Could not add the note right now."}
 
 
+def _tracking_fallback(num: str) -> dict:
+    """When Track123 has no shipment (or errors), fall back to the Shopify order
+    so the agent can still answer (order date, within_24h, fulfillment_status)."""
+    order = get_order_by_number(num)
+    if order.get("found"):
+        order["source"] = "shopify"
+        order["live_tracking"] = False
+    return order
+
+
+def get_tracking_status(order_number: str) -> dict:
+    """Live shipment status from Track123 (the real carrier timeline), by order
+    number. Use this when a customer asks where their order is / delivery status /
+    tracking — it returns the ACTUAL transit status (Delivered, InTransit, etc.),
+    which Shopify alone does not know, plus the tracking number, tracking link and
+    a short recent timeline. If nothing has shipped yet (or tracking is
+    unavailable) it falls back to the Shopify order info. Never invent any of
+    this — report only what the tool returns."""
+    num = str(order_number or "").strip().lstrip("#")
+    if not num:
+        return {"found": False, "message": "No order number provided."}
+    # No Track123 config -> just use Shopify.
+    if not (TRACK123_API_KEY and TRACK123_STORE):
+        return _tracking_fallback(num)
+
+    url = f"{TRACK123_BASE}/{TRACK123_STORE}/orders/by-number/{num}.json"
+    try:
+        res = requests.get(url, headers={"X-Api-Key": TRACK123_API_KEY}, timeout=25)
+    except Exception as e:
+        print(f"[track123] request error: {e}")
+        return _tracking_fallback(num)
+    if res.status_code != 200:
+        print(f"[track123] {res.status_code}: {res.text[:200]}")
+        return _tracking_fallback(num)
+
+    order = (res.json() or {}).get("order") or {}
+    fulfillments = order.get("fulfillments") or []
+    if not fulfillments:
+        # Nothing shipped yet in Track123 — use Shopify for the order details.
+        return _tracking_fallback(num)
+
+    f = fulfillments[0]
+
+    # Build the customer-facing timeline. Two filters, per policy:
+    #  - only events that happened in Israel (event_location == "Israel") — we
+    #    don't expose the China/warehouse leg (gives a "took long" impression).
+    #  - drop customs events (they read as delays / bureaucratic noise).
+    events = []
+    for ev in (f.get("tracking_details") or []):
+        loc = (ev.get("event_location") or "").strip()
+        detail = (ev.get("event_detail") or "").strip()
+        if loc != "Israel":
+            continue
+        if re.search(r"custom", detail, re.IGNORECASE):   # customs / custom
+            continue
+        events.append({
+            "time": ev.get("event_time"),
+            "detail": detail,
+            "location": loc,
+        })
+        if len(events) >= 6:
+            break
+
+    # The tracking link the customer should get: our branded Track123 page on the
+    # site, with the tracking number appended (same link the store uses).
+    tracking_number = f.get("tracking_number")
+    tracking_link = (order.get("tracking_link") or "").strip()
+    if tracking_link and tracking_number:
+        sep = "&" if "?" in tracking_link else "?"
+        tracking_link = f"{tracking_link}{sep}nums={tracking_number}"
+
+    return {
+        "found": True,
+        "source": "track123",
+        "live_tracking": True,
+        "order_number": order.get("order_number") or num,
+        "shipped": True,
+        "transit_status": f.get("transit_status"),          # Delivered / InTransit / ...
+        "transit_sub_status": f.get("transit_sub_status"),
+        "last_event": f.get("last_event"),
+        "last_event_time": f.get("last_event_time"),
+        "tracking_number": tracking_number,
+        "tracking_url": tracking_link,
+        "carrier": (f.get("courier") or {}).get("name") or f.get("tracking_company"),
+        "timeline": events,
+    }
+
+
 def escalate_to_human(reason: str = "", summary: str = "") -> dict:
     print("\n" + "="*50)
     print("[ESCALATION REQUIRED]")
@@ -532,6 +625,17 @@ TOOLS = [
             )
         ),
         types.FunctionDeclaration(
+            name="get_tracking_status",
+            description="Get the LIVE shipment/delivery status of an order from the carrier (Track123), by order number. Use this whenever a customer asks where their order is, its delivery status, or to track it — it returns the real transit status (Delivered, InTransit, etc.) and the latest tracking events, which the Shopify order tools do NOT know. Prefer this over get_order_by_number for 'where is my order' questions.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "order_number": types.Schema(type=types.Type.STRING, description="The order number e.g. '1042' or '#1042'"),
+                },
+                required=["order_number"]
+            )
+        ),
+        types.FunctionDeclaration(
             name="add_order_note",
             description="Add a note to an existing order. Use when a customer requests a cancellation or a change, or has a special instruction. Pass the order number the customer gave (e.g. 1475) or the internal order_id from a previous lookup — either works.",
             parameters=types.Schema(
@@ -595,6 +699,8 @@ def dispatch_tool(name: str, args: dict) -> dict:
         return get_order_by_email(**args)
     elif name == "get_order_by_number":
         return get_order_by_number(**args)
+    elif name == "get_tracking_status":
+        return get_tracking_status(**args)
     elif name == "add_order_note":
         return add_order_note(**args)
     elif name == "escalate_to_human":
