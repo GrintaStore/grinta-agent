@@ -489,6 +489,15 @@ def get_tracking_status(order_number: str) -> dict:
         sep = "&" if "?" in tracking_link else "?"
         tracking_link = f"{tracking_link}{sep}nums={tracking_number}"
 
+    # Surface the customer so the session can be linked (email for panel replies).
+    cust = order.get("customer") or {}
+    customer = {}
+    if cust:
+        customer = {
+            "email": (cust.get("email") or "").strip() or None,
+            "name": (cust.get("name") or "").strip() or None,
+        }
+
     return {
         "found": True,
         "source": "track123",
@@ -502,6 +511,7 @@ def get_tracking_status(order_number: str) -> dict:
         "tracking_number": tracking_number,
         "tracking_url": tracking_link,
         "carrier": (f.get("courier") or {}).get("name") or f.get("tracking_company"),
+        "customer": customer,
         "timeline": events,
     }
 
