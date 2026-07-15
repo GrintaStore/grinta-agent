@@ -852,6 +852,13 @@ def run_loop(session_id: str, history, current_page: str | None = None, models=N
                 em = (cust.get("email") or "").strip()
                 if em:
                     db.set_contact_email(session_id, em, cust.get("name"), cust.get("id"))
+            elif name == "get_tracking_status" and isinstance(result, dict):
+                # Tracking lookups also carry the customer (from Track123 or the
+                # Shopify fallback) — link them so the panel has an email to reply to.
+                cust = result.get("customer") or {}
+                em = (cust.get("email") or "").strip()
+                if em:
+                    db.set_contact_email(session_id, em, cust.get("name"), cust.get("id"))
 
             tool_response_parts.append(types.Part(
                 function_response=types.FunctionResponse(
