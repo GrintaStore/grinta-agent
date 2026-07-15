@@ -750,6 +750,12 @@ def _strip_reasoning(text: str) -> str:
         blocks = re.split(r'\n[ \t]*\n', after, maxsplit=1)
         if len(blocks) == 2 and blocks[1].strip():
             return blocks[1].strip()
+        # No blank line and no answer label: the reasoning (English/Latin) often
+        # runs straight into the reply (Hebrew/Arabic) with no separator, e.g.
+        # "...instructions.זמן האספקה...". Cut at the first Hebrew/Arabic char.
+        rtl = re.search(r'[\u0590-\u05FF\u0600-\u06FF]', after)
+        if rtl and rtl.start() > 0:
+            return after[rtl.start():].strip()
     return t
 
 
