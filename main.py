@@ -1720,6 +1720,7 @@ ADMIN_HTML = """
   .composer button { padding:0 18px; height:44px; border:none; border-radius:22px; background:var(--gold); cursor:pointer; font-weight:700; }
   .composer .hb { background:#eee; }
   .empty { margin:auto; color:#999; }
+  #mobileBack { display:none; }
 
   /* ---- Mobile (phones): one screen at a time. Desktop above is untouched. ---- */
   @media (max-width: 760px) {
@@ -1727,9 +1728,8 @@ ADMIN_HTML = """
     body:not(.mobile-conv) .conv { display:none; }  /* on the list -> hide the chat */
     .list { width:100%; border-left:none; }
     .conv { width:100%; }
-    #mobileBack.show { display:inline; }
-    .filter, .rangefilter { flex-wrap:nowrap; overflow-x:auto; }
-    .filter button, .rangefilter button { flex:0 0 auto; white-space:nowrap; }
+    #mobileBack { display:none; }
+    body.mobile-conv #mobileBack { display:inline; }
     .m { max-width:85%; }
     .msgs { padding:12px; }
     .composer { gap:7px; padding:9px; }
@@ -1741,7 +1741,7 @@ ADMIN_HTML = """
 </head>
 <body>
 <header>
-  <span id="mobileBack" onclick="mobileToList()" style="display:none;cursor:pointer;color:var(--gold);font-size:22px;margin-left:6px;">←</span>
+  <span id="mobileBack" onclick="mobileToList()" style="cursor:pointer;color:var(--gold);font-size:22px;margin-left:6px;">←</span>
   Grinta — <b>תיבת פניות</b></header>
 <div class="wrap">
   <div class="list">
@@ -1963,16 +1963,8 @@ ADMIN_HTML = """
 
   // On phones the list and the conversation are separate full screens.
   // Opening a conversation switches to the chat screen; the ← arrow returns.
-  function mobileToConv(){
-    document.body.classList.add('mobile-conv');
-    var b = document.getElementById('mobileBack');
-    if(b) b.classList.add('show');
-  }
-  function mobileToList(){
-    document.body.classList.remove('mobile-conv');
-    var b = document.getElementById('mobileBack');
-    if(b) b.classList.remove('show');
-  }
+  function mobileToConv(){ document.body.classList.add('mobile-conv'); }
+  function mobileToList(){ document.body.classList.remove('mobile-conv'); }
 
   function openConv(id){
     viewingBlocklist = false;
