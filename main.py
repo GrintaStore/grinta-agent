@@ -1720,10 +1720,29 @@ ADMIN_HTML = """
   .composer button { padding:0 18px; height:44px; border:none; border-radius:22px; background:var(--gold); cursor:pointer; font-weight:700; }
   .composer .hb { background:#eee; }
   .empty { margin:auto; color:#999; }
+
+  /* ---- Mobile (phones): one screen at a time. Desktop above is untouched. ---- */
+  @media (max-width: 760px) {
+    body.mobile-conv .list { display:none; }        /* in a chat -> hide the list */
+    body:not(.mobile-conv) .conv { display:none; }  /* on the list -> hide the chat */
+    .list { width:100%; border-left:none; }
+    .conv { width:100%; }
+    #mobileBack.show { display:inline; }
+    .filter, .rangefilter { flex-wrap:nowrap; overflow-x:auto; }
+    .filter button, .rangefilter button { flex:0 0 auto; white-space:nowrap; }
+    .m { max-width:85%; }
+    .msgs { padding:12px; }
+    .composer { gap:7px; padding:9px; }
+    .composer textarea { min-width:0; }
+    .composer button { padding:0 13px; height:40px; }
+    #hintWrap { width:100%; }
+  }
 </style>
 </head>
 <body>
-<header>Grinta — <b>תיבת פניות</b></header>
+<header>
+  <span id="mobileBack" onclick="mobileToList()" style="display:none;cursor:pointer;color:var(--gold);font-size:22px;margin-left:6px;">←</span>
+  Grinta — <b>תיבת פניות</b></header>
 <div class="wrap">
   <div class="list">
     <div style="padding:9px;border-bottom:1px solid #eee;">
@@ -1942,6 +1961,19 @@ ADMIN_HTML = """
     bar.innerHTML = '📍 דף אחרון: <a href="'+s.last_page+'" target="_blank" style="color:#06c;word-break:break-all">'+s.last_page+'</a>';
   }
 
+  // On phones the list and the conversation are separate full screens.
+  // Opening a conversation switches to the chat screen; the ← arrow returns.
+  function mobileToConv(){
+    document.body.classList.add('mobile-conv');
+    var b = document.getElementById('mobileBack');
+    if(b) b.classList.add('show');
+  }
+  function mobileToList(){
+    document.body.classList.remove('mobile-conv');
+    var b = document.getElementById('mobileBack');
+    if(b) b.classList.remove('show');
+  }
+
   function openConv(id){
     viewingBlocklist = false;
     var comp = document.querySelector('.composer');
@@ -1954,6 +1986,7 @@ ADMIN_HTML = """
       clearAdminImage();
     }
     current = id;
+    mobileToConv();
     loadSessions();
     loadMsgs();
     updateToggle();
@@ -2008,6 +2041,7 @@ ADMIN_HTML = """
       body: JSON.stringify({session_id: id, content: ''})})
       .then(()=>{
         current = null;
+        mobileToList();
         document.getElementById('convhead').style.display='none';
         document.getElementById('pagebar').style.display='none';
         document.getElementById('msgs').innerHTML = '<div class="empty">בחר שיחה מהרשימה</div>';
