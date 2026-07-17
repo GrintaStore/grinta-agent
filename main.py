@@ -1431,9 +1431,13 @@ def admin_sessions(only_escalated: bool = False, days: int = 7,
 
 
 @app.get("/admin/api/messages")
-def admin_messages(session_id: str, _: bool = Depends(check_admin)):
+def admin_messages(session_id: str, mark: bool = True, _: bool = Depends(check_admin)):
     msgs = db.get_messages(session_id)
-    db.mark_read(session_id)
+    # Only mark read when explicitly opening a conversation (mark=1), NOT on the
+    # 4-second auto-poll (mark=0). Otherwise a poll re-marks a session read right
+    # after the user marked it unread, and the unread flag never sticks.
+    if mark:
+        db.mark_read(session_id)
     return {"messages": msgs}
 
 
@@ -1980,7 +1984,7 @@ ADMIN_HTML = """
     current = id;
     mobileToConv();
     loadSessions();
-    loadMsgs();
+    loadMsgs(true);
     updateToggle();
     updatePageBar();
     updateDelivery();
@@ -2103,10 +2107,12 @@ ADMIN_HTML = """
       + '📄 <span dir="ltr">' + escapeHtml(name) + '</span></a>';
   }
 
-  function loadMsgs(){
+  function loadMsgs(markRead){
     if(viewingBlocklist) return;
     if(!current) return;
-    fetch('/admin/api/messages?session_id=' + encodeURIComponent(current))
+    var url = '/admin/api/messages?session_id=' + encodeURIComponent(current)
+              + '&mark=' + (markRead ? '1' : '0');
+    fetch(url)
       .then(r=>r.json()).then(d=>{
         const box = document.getElementById('msgs');
         const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
