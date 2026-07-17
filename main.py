@@ -2029,16 +2029,18 @@ ADMIN_HTML = """
   function markUnread(){
     if(!current) return;
     var id = current;
+    // Clear current FIRST: the 4s loadMsgs poll calls /admin/api/messages, which
+    // marks the open conversation read. If we cleared current only after the
+    // request returned, a poll tick could re-mark this session read and undo the
+    // unread flag. Stopping "current" now prevents that race.
+    current = null;
+    mobileToList();
+    document.getElementById('convhead').style.display='none';
+    document.getElementById('pagebar').style.display='none';
+    document.getElementById('msgs').innerHTML = '<div class="empty">בחר שיחה מהרשימה</div>';
     fetch('/admin/api/mark_unread', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({session_id: id, content: ''})})
-      .then(()=>{
-        current = null;
-        mobileToList();
-        document.getElementById('convhead').style.display='none';
-        document.getElementById('pagebar').style.display='none';
-        document.getElementById('msgs').innerHTML = '<div class="empty">בחר שיחה מהרשימה</div>';
-        loadSessions();
-      })
+      .then(()=>{ loadSessions(); })
       .catch(()=>alert('שגיאה'));
   }
 
