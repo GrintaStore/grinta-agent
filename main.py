@@ -1736,9 +1736,14 @@ ADMIN_HTML = """
     body.mobile-conv #mobileBack { display:inline; }
     .m { max-width:85%; }
     .msgs { padding:12px; }
-    .composer { gap:7px; padding:9px; }
-    .composer textarea { min-width:0; }
-    .composer button { padding:0 13px; height:40px; }
+    .composer { gap:7px; padding:10px; }
+    /* Reply box: full width on its own row, and taller so you can see what you type */
+    .composer textarea { flex:1 1 100%; min-width:0; min-height:92px; }
+    /* Buttons flow onto the row(s) beneath the textarea */
+    .composer button { padding:0 14px; height:44px; }
+    #attachBtn, #genBtn { flex:0 0 auto; }
+    #sendBtn { flex:1; }              /* send fills the remaining width */
+    #toggleBtn { flex:1 1 100%; }     /* handback / take-over on its own full row */
     #hintWrap { width:100%; }
   }
 </style>
