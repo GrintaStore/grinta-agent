@@ -1745,14 +1745,18 @@ ADMIN_HTML = """
     .m { max-width:85%; }
     .msgs { padding:12px; }
     .composer { gap:7px; padding:10px; }
-    /* Reply box: full width on its own row, and taller so you can see what you type */
-    .composer textarea { flex:1 1 100%; min-width:0; min-height:92px; }
-    /* Buttons flow onto the row(s) beneath the textarea */
-    .composer button { padding:0 14px; height:44px; }
-    #attachBtn, #genBtn { flex:0 0 auto; }
-    #sendBtn { flex:1; }              /* send fills the remaining width */
-    #toggleBtn { flex:1 1 100%; }     /* handback / take-over on its own full row */
-    #hintWrap { width:100%; }
+    .composer button { padding:0 14px; height:46px; }
+    /* Row 1: hint field with the draft button beside it (draft on the left) */
+    #mailToggleWrap { order:0; }
+    #hintWrap { width:auto !important; flex:1 1 auto; order:1; }
+    #genBtn { order:2; flex:0 0 auto; align-self:flex-end; }
+    /* Row 2: attached-image preview (when shown) then the full-width reply box */
+    #imgPreview { order:3; }
+    #reply { order:4; flex:1 1 100%; min-width:0; min-height:88px; }
+    /* Row 3 (right->left): attach, big send, hand-back */
+    #attachBtn { order:5; flex:0 0 auto; }
+    #sendBtn  { order:6; flex:1; }
+    #toggleBtn { order:7; flex:0 0 auto; }
   }
 </style>
 </head>
