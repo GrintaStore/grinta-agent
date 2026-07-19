@@ -543,15 +543,20 @@ def _fetch_image_bytes(url: str):
             return None, None
         mime = (res.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if not mime.startswith("image/"):
-            low = url.lower()
+            low = url.lower().split("?")[0]
             if low.endswith(".png"):
                 mime = "image/png"
             elif low.endswith(".webp"):
                 mime = "image/webp"
             elif low.endswith(".gif"):
                 mime = "image/gif"
-            else:
+            elif low.endswith((".jpg", ".jpeg")):
                 mime = "image/jpeg"
+            else:
+                # Not an image (e.g. a PDF or doc attachment). Do NOT mislabel it
+                # as an image — the model's image input would reject it (400).
+                print(f"[image fetch] not an image ({mime or 'unknown'}) — skipping {url[:80]}")
+                return None, None
         return res.content, mime
     except Exception as e:
         print(f"[image fetch] error: {e}")
@@ -590,13 +595,16 @@ def build_history(session_id: str, skip_last_user: bool):
     if skip_last_user and msgs and msgs[-1]["role"] == "user":
         msgs = msgs[:-1]
 
-    # Find the most recent customer message that carries an image; we attach the
-    # actual image only for that one (so the model can see it) and keep older
-    # ones as their text placeholder — cheap, and mirrors the widget which only
-    # passes the current turn's image.
+    # Find the most recent customer message that carries an IMAGE (not a pdf/doc
+    # — those live in the same image_data field but can't be sent as image parts).
+    def _is_image_url(u: str) -> bool:
+        u = (u or "").split("?")[0].lower()
+        return u.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"))
+
     last_img_idx = -1
     for i in range(len(msgs) - 1, -1, -1):
-        if msgs[i].get("role") == "user" and msgs[i].get("image_data"):
+        if (msgs[i].get("role") == "user" and msgs[i].get("image_data")
+                and _is_image_url(msgs[i]["image_data"])):
             last_img_idx = i
             break
 
@@ -606,7 +614,7 @@ def build_history(session_id: str, skip_last_user: bool):
         parts = []
         if i == last_img_idx:
             data, mime = _fetch_image_bytes(m.get("image_data"))
-            if data:
+            if data and (mime or "").startswith("image/"):
                 parts.append(types.Part.from_bytes(data=data, mime_type=mime))
         text = m.get("content") or ""
         if text:
