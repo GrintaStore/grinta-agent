@@ -1671,7 +1671,9 @@ def admin_lookup_email(email: str = "", order: str = "", _: bool = Depends(check
         if cust:
             name = " ".join(p for p in [cust.get("first_name"), cust.get("last_name")] if p).strip()
 
-    return {"is_customer": is_customer, "conversation_exists": exists, "name": name, "email": email}
+    return {"is_customer": is_customer, "conversation_exists": exists,
+            "name": name, "email": email,
+            "session_id": (f"email-{email}" if exists else "")}
 
 
 @app.post("/admin/api/new_email_conversation")
@@ -2065,11 +2067,34 @@ ADMIN_HTML = """
       .then(d=>{
         // Guard: the query may have changed while the request was in flight.
         if((searchQuery || '').trim().toLowerCase() !== q) return;
-        if(!d.is_customer || d.conversation_exists) return;
         var email = d.email || (isEmail ? q : '');
-        if(!email) return;
         var box = document.getElementById('sessions');
-        if(!box || document.getElementById('newEmailOption')) return;
+        if(!box) return;
+        var cnt = document.getElementById('searchCount');
+
+        // Existing conversation: normal text-search finds it for an email query,
+        // but NOT for an order-number query (the number isn't in the conversation
+        // text). Surface it here if it isn't already in the rendered list.
+        if(d.conversation_exists && d.session_id){
+          var already = sessionsData.some(function(s){ return s.session_id === d.session_id; });
+          if(already || document.getElementById('existingConvOption')) return;
+          var ex = document.createElement('div');
+          ex.id = 'existingConvOption';
+          ex.className = 'sess';
+          ex.onclick = function(){ openConv(d.session_id); };
+          ex.innerHTML =
+            '<div class="top"><span><span class="badge" style="background:#e7f6e7;color:#1a7a3a;margin-left:4px">📧 מייל</span></span></div>'
+            + '<div class="preview">' + escapeHtml(email) + (d.name ? ' (' + escapeHtml(d.name) + ')' : '') + '</div>';
+          if(cnt && cnt.nextSibling){ box.insertBefore(ex, cnt.nextSibling); }
+          else { box.appendChild(ex); }
+          if(cnt){ cnt.textContent = (sessionsData.length + 1) + ' תוצאות'; }
+          return;
+        }
+
+        // No conversation yet: offer to start one, if it's a real customer.
+        if(!d.is_customer || d.conversation_exists) return;
+        if(!email) return;
+        if(document.getElementById('newEmailOption')) return;
         var div = document.createElement('div');
         div.id = 'newEmailOption';
         div.className = 'sess';
@@ -2080,7 +2105,6 @@ ADMIN_HTML = """
           + '<div class="preview" style="color:#1a7a3a;font-weight:600;">שלח הודעה חדשה ל-' + escapeHtml(email)
           + (d.name ? ' (' + escapeHtml(d.name) + ')' : '') + '</div>';
         // Put it right under the count line (top of results).
-        var cnt = document.getElementById('searchCount');
         if(cnt && cnt.nextSibling){ box.insertBefore(div, cnt.nextSibling); }
         else { box.appendChild(div); }
         // Reflect the extra result in the count.
