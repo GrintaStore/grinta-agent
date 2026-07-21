@@ -1617,12 +1617,31 @@ def admin_generate(req: ReplyRequest, _: bool = Depends(check_admin)):
 
 
 @app.get("/admin/api/lookup_email")
-def admin_lookup_email(email: str, _: bool = Depends(check_admin)):
-    """For the search box: given a full email, tell the panel whether it belongs
-    to a Shopify customer and whether an email conversation already exists.
-    Used to offer a 'start new message' result only when the email is a real
-    customer AND has no existing conversation (existence check ignores filters)."""
+def admin_lookup_email(email: str = "", order: str = "", _: bool = Depends(check_admin)):
+    """For the search box: given a full email OR an order number, tell the panel
+    whether it maps to a Shopify customer and whether an email conversation
+    already exists. Used to offer a 'start new message' result only when it's a
+    real customer AND has no existing conversation (existence check ignores
+    filters). For an order number, resolve it to the order's customer email
+    first, then behave exactly as for that email."""
     email = (email or "").strip().lower()
+
+    # Order-number path: resolve to the order's customer email, then continue.
+    if order:
+        num = order.strip().lstrip("#")
+        if not num.isdigit():
+            return {"is_customer": False, "conversation_exists": False}
+        try:
+            found = tools.get_order_by_number(num)
+        except Exception as e:
+            print(f"[lookup order] {e}")
+            found = {}
+        cust = (found or {}).get("customer") or {}
+        email = (cust.get("email") or "").strip().lower()
+        if not email:
+            # No order, or a guest order without an email — nothing to offer.
+            return {"is_customer": False, "conversation_exists": False}
+
     # Require a plausibly-complete email (has @ and a domain with a dot).
     if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
         return {"is_customer": False, "conversation_exists": False}
@@ -1632,16 +1651,27 @@ def admin_lookup_email(email: str, _: bool = Depends(check_admin)):
     exists = db.get_session(f"email-{email}") is not None
 
     name = ""
-    try:
-        cust = tools.find_customer_by_email(email)
-    except Exception as e:
-        print(f"[lookup_email] {e}")
-        cust = None
-    is_customer = cust is not None
-    if cust:
-        name = " ".join(p for p in [cust.get("first_name"), cust.get("last_name")] if p).strip()
+    is_customer = False
+    if order:
+        # We already resolved via the order, which proves a real customer.
+        is_customer = True
+        try:
+            cust = tools.find_customer_by_email(email)
+            if cust:
+                name = " ".join(p for p in [cust.get("first_name"), cust.get("last_name")] if p).strip()
+        except Exception:
+            pass
+    else:
+        try:
+            cust = tools.find_customer_by_email(email)
+        except Exception as e:
+            print(f"[lookup_email] {e}")
+            cust = None
+        is_customer = cust is not None
+        if cust:
+            name = " ".join(p for p in [cust.get("first_name"), cust.get("last_name")] if p).strip()
 
-    return {"is_customer": is_customer, "conversation_exists": exists, "name": name}
+    return {"is_customer": is_customer, "conversation_exists": exists, "name": name, "email": email}
 
 
 @app.post("/admin/api/new_email_conversation")
@@ -2018,30 +2048,36 @@ ADMIN_HTML = """
       });
   }
 
-  // When the search box holds a valid email, offer a "start new message" result
-  // if that email is a real customer AND has no existing conversation. The option
-  // shows regardless of the active filter. Clicking it creates an escalated email
-  // conversation and opens it.
+  // When the search box holds a valid email OR a 4-5 digit order number, offer a
+  // "start new message" result if it maps to a real customer with no existing
+  // conversation. The option shows regardless of the active filter. Clicking it
+  // creates an escalated email conversation and opens it.
   function maybeOfferNewEmail(){
     var q = (searchQuery || '').trim().toLowerCase();
     var isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(q);
-    if(!isEmail) return;
-    fetch('/admin/api/lookup_email?email=' + encodeURIComponent(q))
+    var isOrder = /^[0-9]{4,5}$/.test(q);
+    if(!isEmail && !isOrder) return;
+    var url = isOrder
+      ? '/admin/api/lookup_email?order=' + encodeURIComponent(q)
+      : '/admin/api/lookup_email?email=' + encodeURIComponent(q);
+    fetch(url)
       .then(r=>r.json())
       .then(d=>{
         // Guard: the query may have changed while the request was in flight.
         if((searchQuery || '').trim().toLowerCase() !== q) return;
         if(!d.is_customer || d.conversation_exists) return;
+        var email = d.email || (isEmail ? q : '');
+        if(!email) return;
         var box = document.getElementById('sessions');
         if(!box || document.getElementById('newEmailOption')) return;
         var div = document.createElement('div');
         div.id = 'newEmailOption';
         div.className = 'sess';
         div.style.cssText = 'background:#f3fbf4;border-bottom:1px solid #e6efe6;';
-        div.onclick = function(){ startNewEmailConversation(q); };
+        div.onclick = function(){ startNewEmailConversation(email); };
         div.innerHTML =
           '<div class="top"><span><span class="badge" style="background:#dff3e2;color:#1a7a3a;margin-left:4px">✉️ הודעה חדשה</span></span></div>'
-          + '<div class="preview" style="color:#1a7a3a;font-weight:600;">שלח הודעה חדשה ל-' + escapeHtml(q)
+          + '<div class="preview" style="color:#1a7a3a;font-weight:600;">שלח הודעה חדשה ל-' + escapeHtml(email)
           + (d.name ? ' (' + escapeHtml(d.name) + ')' : '') + '</div>';
         // Put it right under the count line (top of results).
         var cnt = document.getElementById('searchCount');
