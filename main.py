@@ -1985,7 +1985,7 @@ ADMIN_HTML = """
   // On phones the list and the conversation are separate full screens.
   // Opening a conversation switches to the chat screen; the ← arrow returns.
   function mobileToConv(){ document.body.classList.add('mobile-conv'); }
-  function mobileToList(){ document.body.classList.remove('mobile-conv'); }
+  function mobileToList(){ document.body.classList.remove('mobile-conv'); viewingBlocklist = false; }
 
   function openConv(id){
     viewingBlocklist = false;
@@ -2083,6 +2083,7 @@ ADMIN_HTML = """
   function showBlocklist(){
     viewingBlocklist = true;
     current = null;
+    mobileToConv();
     document.getElementById('convhead').style.display='none';
     document.getElementById('pagebar').style.display='none';
     var comp = document.querySelector('.composer');
