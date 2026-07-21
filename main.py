@@ -1616,6 +1616,64 @@ def admin_generate(req: ReplyRequest, _: bool = Depends(check_admin)):
     return {"draft": text or ""}
 
 
+@app.get("/admin/api/lookup_email")
+def admin_lookup_email(email: str, _: bool = Depends(check_admin)):
+    """For the search box: given a full email, tell the panel whether it belongs
+    to a Shopify customer and whether an email conversation already exists.
+    Used to offer a 'start new message' result only when the email is a real
+    customer AND has no existing conversation (existence check ignores filters)."""
+    email = (email or "").strip().lower()
+    # Require a plausibly-complete email (has @ and a domain with a dot).
+    if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
+        return {"is_customer": False, "conversation_exists": False}
+
+    # A conversation for this email is keyed email-{address}. Check existence
+    # directly (ignores the list filters / date range on purpose).
+    exists = db.get_session(f"email-{email}") is not None
+
+    name = ""
+    try:
+        cust = tools.find_customer_by_email(email)
+    except Exception as e:
+        print(f"[lookup_email] {e}")
+        cust = None
+    is_customer = cust is not None
+    if cust:
+        name = " ".join(p for p in [cust.get("first_name"), cust.get("last_name")] if p).strip()
+
+    return {"is_customer": is_customer, "conversation_exists": exists, "name": name}
+
+
+@app.post("/admin/api/new_email_conversation")
+def admin_new_email_conversation(req: ReplyRequest, _: bool = Depends(check_admin)):
+    """Create a new escalated email conversation for a customer the rep picked
+    from search (no prior conversation). req.content carries the email address."""
+    email = (req.content or "").strip().lower()
+    if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
+        return {"ok": False, "error": "invalid email"}
+
+    session_id = f"email-{email}"
+    if db.get_session(session_id) is not None:
+        # Already exists — just return it so the panel opens the existing thread.
+        return {"ok": True, "session_id": session_id, "existed": True}
+
+    name = ""
+    shopify_cid = None
+    try:
+        cust = tools.find_customer_by_email(email)
+        if cust:
+            name = " ".join(p for p in [cust.get("first_name"), cust.get("last_name")] if p).strip()
+            shopify_cid = cust.get("id")
+    except Exception as e:
+        print(f"[new_email_conversation] {e}")
+
+    db.ensure_session(session_id)
+    db.set_email_meta(session_id, email, "", name, channel="email",
+                      shopify_customer_id=shopify_cid)
+    db.set_status(session_id, "escalated", "פנייה חדשה שנפתחה על ידך")
+    return {"ok": True, "session_id": session_id, "existed": False}
+
+
 @app.post("/admin/api/handback")
 def admin_handback(req: ReplyRequest, _: bool = Depends(check_admin)):
     db.set_status(req.session_id, "bot")
@@ -1914,6 +1972,7 @@ ADMIN_HTML = """
         var sq = searchQuery && searchQuery.trim() ? searchQuery.trim() : '';
         if(sq){
           const cnt = document.createElement('div');
+          cnt.id = 'searchCount';
           cnt.style.cssText = 'padding:6px 12px;font-size:11px;color:#888;border-bottom:1px solid #f0f0f0;';
           cnt.textContent = sessionsData.length + ' שיחות נמצאו';
           box.appendChild(cnt);
@@ -1955,7 +2014,55 @@ ADMIN_HTML = """
         updateToggle();
         updatePageBar();
         updateDelivery();
+        maybeOfferNewEmail();
       });
+  }
+
+  // When the search box holds a valid email, offer a "start new message" result
+  // if that email is a real customer AND has no existing conversation. The option
+  // shows regardless of the active filter. Clicking it creates an escalated email
+  // conversation and opens it.
+  function maybeOfferNewEmail(){
+    var q = (searchQuery || '').trim().toLowerCase();
+    var isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(q);
+    if(!isEmail) return;
+    fetch('/admin/api/lookup_email?email=' + encodeURIComponent(q))
+      .then(r=>r.json())
+      .then(d=>{
+        // Guard: the query may have changed while the request was in flight.
+        if((searchQuery || '').trim().toLowerCase() !== q) return;
+        if(!d.is_customer || d.conversation_exists) return;
+        var box = document.getElementById('sessions');
+        if(!box || document.getElementById('newEmailOption')) return;
+        var div = document.createElement('div');
+        div.id = 'newEmailOption';
+        div.className = 'sess';
+        div.style.cssText = 'background:#f3fbf4;border-bottom:1px solid #e6efe6;';
+        div.onclick = function(){ startNewEmailConversation(q); };
+        div.innerHTML =
+          '<div class="top"><span><span class="badge" style="background:#dff3e2;color:#1a7a3a;margin-left:4px">✉️ הודעה חדשה</span></span></div>'
+          + '<div class="preview" style="color:#1a7a3a;font-weight:600;">שלח הודעה חדשה ל-' + escapeHtml(q)
+          + (d.name ? ' (' + escapeHtml(d.name) + ')' : '') + '</div>';
+        // Put it right under the count line (top of results).
+        var cnt = document.getElementById('searchCount');
+        if(cnt && cnt.nextSibling){ box.insertBefore(div, cnt.nextSibling); }
+        else { box.appendChild(div); }
+        // Reflect the extra result in the count.
+        if(cnt){ cnt.textContent = (sessionsData.length + 1) + ' תוצאות'; }
+      })
+      .catch(()=>{});
+  }
+
+  function startNewEmailConversation(email){
+    fetch('/admin/api/new_email_conversation', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({session_id: '', content: email})})
+      .then(r=>r.json())
+      .then(d=>{
+        if(!d.ok || !d.session_id){ alert('פתיחת ההודעה נכשלה' + (d.error ? ': '+d.error : '')); return; }
+        clearSearch();
+        openConv(d.session_id);
+      })
+      .catch(()=>alert('שגיאה בפתיחת ההודעה'));
   }
 
   function updateToggle(){
