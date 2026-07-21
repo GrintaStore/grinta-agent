@@ -2072,9 +2072,11 @@ ADMIN_HTML = """
         if(!box) return;
         var cnt = document.getElementById('searchCount');
 
-        // Existing conversation: normal text-search finds it for an email query,
-        // but NOT for an order-number query (the number isn't in the conversation
-        // text). Surface it here if it isn't already in the rendered list.
+        // Existing conversation (Option A): a direct email/order lookup always
+        // surfaces that customer's thread, regardless of the date filter. Normal
+        // text-search finds it only when it's an email query AND within range;
+        // this injects it otherwise (out-of-range email, or any order query),
+        // skipping only if it's already rendered in the list.
         if(d.conversation_exists && d.session_id){
           var already = sessionsData.some(function(s){ return s.session_id === d.session_id; });
           if(already || document.getElementById('existingConvOption')) return;
