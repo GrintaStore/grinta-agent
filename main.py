@@ -1538,7 +1538,10 @@ def admin_generate(req: ReplyRequest, _: bool = Depends(check_admin)):
     # so the model always has a concrete task — otherwise, if the conversation
     # already ends with a reply, the model returns an empty STOP completion.
     history = build_history(req.session_id, skip_last_user=False)
-    if not history:
+    # An empty conversation (a new outbound message you're composing) has no
+    # history to reply to. That's fine as long as there's a direction to write
+    # from — only bail if there's nothing at all to work with.
+    if not history and not (req.content or "").strip():
         return {"draft": ""}
 
     sess = db.get_session(req.session_id) or {}
